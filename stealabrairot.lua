@@ -25,7 +25,7 @@ local character, humanoid, root = waitForCharacter()
 local flyEnabled = false
 local vertControl = 0 -- -1 down, 0 none, 1 up
 local flySpeed = 53 -- default speed = 53 (как просил)
-local floatSpeed = 50000 -- отдельная скорость для float (настраиваемая)
+local floatSpeed = 150000 -- отдельная скорость для float (настраиваемая)
 local smoothing = 0.12 -- lerp factor for targetPos (меньше = резвее)
 local acceleration = 8 -- accel factor for velocity smoothing
 local maxStepPerFrame = 6 -- лимит перемещения цели за кадр (м)
@@ -371,8 +371,8 @@ updateSpeedLabel()
 
 -- Float speed buttons
 local function updateFloatLabel() lblFloatVal.Text = tostring(math.floor(floatSpeed)) end
-btnFloatDec.MouseButton1Click:Connect(function() floatSpeed = math.clamp(floatSpeed - 100, 1, 300000000) updateFloatLabel() end)
-btnFloatInc.MouseButton1Click:Connect(function() floatSpeed = math.clamp(floatSpeed + 100, 1, 400000000) updateFloatLabel() end)
+btnFloatDec.MouseButton1Click:Connect(function() floatSpeed = math.clamp(floatSpeed - 1000, 1, 300000000) updateFloatLabel() end)
+btnFloatInc.MouseButton1Click:Connect(function() floatSpeed = math.clamp(floatSpeed + 1000, 1, 400000000) updateFloatLabel() end)
 updateFloatLabel()
 
 btnPlatform.MouseButton1Click:Connect(function() setPlatformEnabled(not platformEnabled) end)
