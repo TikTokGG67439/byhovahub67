@@ -1,10 +1,12 @@
--- LocalScript: Smooth Fly v3 — final (platform 5.5, instant safe TP, flySpeed default 53, float preserved)
+-- Smooth Fly v3 — Final (float preserved + floatForwardSpeed + nice UI + stroke tween)
 -- Put into StarterPlayerScripts
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 if not player then return end
@@ -25,14 +27,22 @@ local character, humanoid, root = waitForCharacter()
 local flyEnabled = false
 local vertControl = 0 -- -1 down, 0 none, 1 up
 local flySpeed = 53 -- default speed = 53 (как просил)
-local floatSpeed = 1500000 -- отдельная скорость для float (настраиваемая)
+
+-- FLOAT: отдельные параметры (same units as fly)
+local floatEnabled = false
+local floatForwardSpeed = 53        -- NEW: скорость горизонтального перемещения при float (stud/s)
+local floatFallMultiplier = 1.10    -- NEW: множитель падения (1.00 neutral; >1 = быстрее падать)
+local floatVerticalSmooth = 6      -- NEW: как быстро вертик. скорость подстраивается (больше = быстрее)
+local floatMaxStepPerFrame = 12    -- ограничение перемещения targetPart за кадр при float
+
 local smoothing = 0.12 -- lerp factor for targetPos (меньше = резвее)
 local acceleration = 8 -- accel factor for velocity smoothing
 local maxStepPerFrame = 6 -- лимит перемещения цели за кадр (м)
 
-local useCameraPitchForTp = true -- TP учитывает pitch камеры (true = 3D)
+local useCameraPitchForTp = true
 local toggleKey = Enum.KeyCode.F
 local tpKey = Enum.KeyCode.T
+local floatKey = Enum.KeyCode.G
 
 -- TP параметры
 local tpDistance = 6
@@ -40,19 +50,16 @@ local tpStep = 1
 local tpMin, tpMax = 1, 100
 local tpCooldown = 0.6
 local lastTpTime = 0
-local tpLerpFactor = 0.35 -- используется только для сглаженной TP (мы делаем instant по кнопке)
+local tpLerpFactor = 0.35
 
--- Платформа
+-- Platform
 local platformEnabled = false
 local platformPart = nil
 local platformOffset = 3
 local platformLerp = 0.12
-local platformSize = Vector3.new(5.5, 0.5, 5.5) -- <- 5.5 x 0.5 x 5.5
+local platformSize = Vector3.new(5.5, 0.5, 5.5)
 local platformColor = Color3.fromRGB(120, 120, 120)
-
--- Float mode
-local floatEnabled = false
-local floatKey = Enum.KeyCode.G
+local PLATFORM_EVENT_NAME = "FlyPlatformPing" -- optional RemoteEvent in ReplicatedStorage
 
 -- UI
 local screenGui = Instance.new("ScreenGui")
@@ -60,44 +67,125 @@ screenGui.Name = "FlyGUI_v3_safe"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
-local function makeBtn(x, y, w, h, text)
+local function makeBtn(parent, x, y, w, h, text)
 	local b = Instance.new("TextButton")
 	b.Size = UDim2.new(0, w, 0, h)
 	b.Position = UDim2.new(0, x, 0, y)
 	b.Text = text
 	b.Font = Enum.Font.SourceSans
-	b.TextSize = 16
+	b.TextSize = 14
 	b.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
 	b.TextColor3 = Color3.new(1, 1, 1)
 	b.AutoButtonColor = true
-	b.Parent = screenGui
-	local corner = Instance.new("UICorner", b)
-	corner.CornerRadius = UDim.new(0, 6)
+	b.Parent = parent
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = b
 	return b
 end
 
-local btnToggle = makeBtn(16, 16, 150, 36, "Fly: OFF")
-local btnUp = makeBtn(180, 16, 36, 36, "▲"); btnUp.Visible = false
-local btnDown = makeBtn(220, 16, 36, 36, "▼"); btnDown.Visible = false
-local btnTp = makeBtn(260, 16, 56, 36, "Tp"); btnTp.Visible = false
-local btnTpDec = makeBtn(328, 16, 26, 18, "−"); btnTpDec.Visible = false
-local lblTpVal = makeBtn(328, 36, 60, 18, tostring(tpDistance)); lblTpVal.AutoButtonColor = false; lblTpVal.Visible = false
-local btnTpInc = makeBtn(394, 16, 26, 18, "+"); btnTpInc.Visible = false
+-- Main frame with UICorner + UIStroke (stroke tween blue <-> orange)
+local function makeMainFrame()
+	local frame = Instance.new("Frame")
+	frame.Name = "FlyMainFrame"
+	frame.Size = UDim2.new(0, 780, 0, 140)
+	frame.Position = UDim2.new(0, 16, 0, 16)
+	frame.BackgroundTransparency = 0.05
+	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+	frame.Parent = screenGui
 
-local btnSpeedDec = makeBtn(430, 16, 26, 18, "−"); btnSpeedDec.Visible = false
-local lblSpeedVal = makeBtn(430, 36, 60, 18, tostring(flySpeed)); lblSpeedVal.AutoButtonColor = false; lblSpeedVal.Visible = false
-local btnSpeedInc = makeBtn(496, 16, 26, 18, "+"); btnSpeedInc.Visible = false
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = frame
 
-local btnPlatform = makeBtn(540, 16, 120, 36, "Platform: OFF"); btnPlatform.Visible = true
-local btnFloat = makeBtn(680, 16, 120, 36, "Float: OFF"); btnFloat.Visible = true
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 2
+	stroke.Color = Color3.fromRGB(34, 111, 255) -- initial blue
+	stroke.Parent = frame
 
--- FLOAT speed controls (отдельно)
-local btnFloatDec = makeBtn(540, 60, 26, 18, "−")
-local lblFloatVal = makeBtn(570, 60, 60, 18, tostring(floatSpeed)); lblFloatVal.AutoButtonColor = false
-local btnFloatInc = makeBtn(636, 60, 26, 18, "+")
+	local header = Instance.new("Frame")
+	header.Name = "Header"
+	header.Size = UDim2.new(1, 0, 0, 34)
+	header.Position = UDim2.new(0, 0, 0, 0)
+	header.BackgroundTransparency = 1
+	header.Parent = frame
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(0.6, -8, 1, 0)
+	title.Position = UDim2.new(0, 12, 0, 0)
+	title.Text = "Smooth Fly v3 — safe (float preserved)"
+	title.Font = Enum.Font.SourceSansBold
+	title.TextSize = 18
+	title.TextColor3 = Color3.fromRGB(230, 230, 230)
+	title.BackgroundTransparency = 1
+	title.Parent = header
+
+	return frame, stroke, header
+end
+
+local mainFrame, mainStroke, mainHeader = makeMainFrame()
+
+-- start stroke tween
+do
+	local info = TweenInfo.new(1, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1, true)
+	local goal = {Color = Color3.fromRGB(255, 140, 34)}
+	local tw = TweenService:Create(mainStroke, info, goal)
+	tw:Play()
+end
+
+-- draggable header (works for touch & mouse)
+do
+	local dragging = false
+	local dragStart, startPos = nil, nil
+	mainHeader.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dragStart = input.Position
+			startPos = mainFrame.Position
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end)
+		end
+	end)
+	mainHeader.InputChanged:Connect(function(input)
+		if (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) and dragging and dragStart and startPos then
+			local delta = input.Position - dragStart
+			mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end)
+end
+
+-- create UI buttons
+local btnToggle = makeBtn(mainFrame, 12, 44, 150, 36, "Fly: OFF")
+local btnUp = makeBtn(mainFrame, 176, 44, 36, 36, "▲"); btnUp.Visible = false
+local btnDown = makeBtn(mainFrame, 220, 44, 36, 36, "▼"); btnDown.Visible = false
+local btnTp = makeBtn(mainFrame, 264, 44, 56, 36, "Tp"); btnTp.Visible = false
+local btnTpDec = makeBtn(mainFrame, 332, 44, 26, 18, "−"); btnTpDec.Visible = false
+local lblTpVal = makeBtn(mainFrame, 332, 62, 60, 18, tostring(tpDistance)); lblTpVal.AutoButtonColor = false; lblTpVal.Visible = false
+local btnTpInc = makeBtn(mainFrame, 398, 44, 26, 18, "+"); btnTpInc.Visible = false
+local btnSpeedDec = makeBtn(mainFrame, 430, 44, 26, 18, "−"); btnSpeedDec.Visible = false
+local lblSpeedVal = makeBtn(mainFrame, 430, 62, 60, 18, tostring(flySpeed)); lblSpeedVal.AutoButtonColor = false; lblSpeedVal.Visible = false
+local btnSpeedInc = makeBtn(mainFrame, 496, 44, 26, 18, "+"); btnSpeedInc.Visible = false
+local btnPlatform = makeBtn(mainFrame, 520, 44, 120, 36, "Platform: OFF")
+local btnFloat = makeBtn(mainFrame, 656, 44, 92, 36, "Float: OFF")
+
+-- float controls (forward speed, fall multiplier, vertical smoothing)
+local btnFloatDec = makeBtn(mainFrame, 520, 90, 26, 18, "−")
+local lblFloatVal = makeBtn(mainFrame, 548, 90, 86, 18, tostring(floatForwardSpeed)); lblFloatVal.AutoButtonColor = false
+local btnFloatInc = makeBtn(mainFrame, 644, 90, 26, 18, "+")
+
+local btnFallDec = makeBtn(mainFrame, 586, 90, 26, 18, "−")
+local lblFallVal = makeBtn(mainFrame, 614, 90, 80, 18, string.format("%.2f", floatFallMultiplier)); lblFallVal.AutoButtonColor = false
+local btnFallInc = makeBtn(mainFrame, 700, 90, 26, 18, "+")
+
+local btnVertDec = makeBtn(mainFrame, 456, 90, 26, 18, "−")
+local lblVertVal = makeBtn(mainFrame, 484, 90, 64, 18, tostring(floatVerticalSmooth)); lblVertVal.AutoButtonColor = false
+local btnVertInc = makeBtn(mainFrame, 560, 90, 26, 18, "+")
 
 -- ===========================
--- Align-based fly objects
+-- Align-based fly objects (fly uses align heavily; float uses separate floatVelocity)
 -- ===========================
 local targetPart
 local attachRoot
@@ -157,11 +245,14 @@ end
 createFlyObjects(root)
 
 -- internal state
-local targetVelocity = Vector3.new(0, 0, 0)
+local targetVelocity = Vector3.new(0, 0, 0) -- used by fly
+local floatVelocity = Vector3.new(0, 0, 0)  -- used by float (single source of truth)
 local tpTargetPos = nil
 local isTpActive = false
 
--- Platform helpers (реальный объект в Workspace: Anchored=true, CanCollide=true)
+-- ===========================
+-- Platform helpers (multiple attachments)
+-- ===========================
 local function createPlatformPart()
 	if platformPart and platformPart.Parent then return end
 	platformPart = Instance.new("Part")
@@ -175,6 +266,22 @@ local function createPlatformPart()
 	platformPart.BottomSurface = Enum.SurfaceType.Smooth
 	platformPart.Parent = Workspace
 	platformPart:SetAttribute("IsFlyPlatform", true)
+
+	for i = 1, 4 do
+		local a = Instance.new("Attachment")
+		a.Name = "FlyPlatform_Attach" .. tostring(i)
+		a.Parent = platformPart
+		a.Position = Vector3.new((i-2.5)*0.6, 0, 0)
+	end
+
+	platformPart.Touched:Connect(function(other)
+		if not character or not root then return end
+		if other:IsDescendantOf(character) then
+			pcall(function() platformPart:SetAttribute("LastTouchedBy", player.UserId) end)
+			local evt = ReplicatedStorage:FindFirstChild(PLATFORM_EVENT_NAME)
+			if evt and evt:IsA("RemoteEvent") then pcall(function() evt:FireServer(true) end) end
+		end
+	end)
 end
 
 local function destroyPlatformPart()
@@ -197,7 +304,9 @@ end
 
 setPlatformEnabled(false)
 
--- Enable/disable fly
+-- ===========================
+-- Enable/disable fly & float
+-- ===========================
 local function enableFly(enable)
 	flyEnabled = enable
 	btnToggle.Text = flyEnabled and "Fly: ON" or "Fly: OFF"
@@ -210,6 +319,7 @@ local function enableFly(enable)
 	btnSpeedDec.Visible = flyEnabled
 	lblSpeedVal.Visible = flyEnabled
 	btnSpeedInc.Visible = flyEnabled
+
 	if flyEnabled then
 		if floatEnabled then
 			floatEnabled = false
@@ -218,26 +328,31 @@ local function enableFly(enable)
 		if targetPart and root then
 			targetPart.CFrame = root.CFrame
 			targetVelocity = Vector3.new(0, 0, 0)
-			alignPos.Enabled = true
-			alignOri.Enabled = true
-			-- restore alignPos force for fly
+			if alignPos then
+				alignPos.Enabled = true
+				alignOri.Enabled = true
+				alignPos.MaxForce = 1e6
+				alignPos.Responsiveness = 18
+				alignPos.MaxVelocity = math.huge
+				alignOri.Responsiveness = 16
+			end
+		end
+	else
+		if alignPos then
+			alignPos.Enabled = false
+			alignOri.Enabled = false
 			alignPos.MaxForce = 1e6
 			alignPos.Responsiveness = 18
 			alignPos.MaxVelocity = math.huge
+			alignOri.Responsiveness = 16
 		end
-	else
-		alignPos.Enabled = false
-		alignOri.Enabled = false
-		if targetPart then
-			targetPart.CFrame = root.CFrame
-		end
+		if targetPart then targetPart.CFrame = root.CFrame end
 		targetVelocity = Vector3.new(0, 0, 0)
 		tpTargetPos = nil
 		isTpActive = false
 	end
 end
 
--- Enable/disable float
 local function enableFloat(enable)
 	floatEnabled = enable
 	btnFloat.Text = floatEnabled and "Float: ON" or "Float: OFF"
@@ -246,25 +361,25 @@ local function enableFloat(enable)
 			flyEnabled = false
 			btnToggle.Text = "Fly: OFF"
 		end
-		if targetPart and root then
-			targetPart.CFrame = root.CFrame
-			targetVelocity = Vector3.new(0, 0, 0)
-			alignPos.Enabled = true
-			-- make alignPos gentler during float so movement is less "brute force"
-			alignPos.MaxForce = 5e4
-			alignPos.Responsiveness = 6
-			alignPos.MaxVelocity = 60
-			alignOri.Enabled = false -- float shouldn't force orientation
-		end
-	else
-		-- restore align defaults when float off
+		-- gentle AlignPosition so server still sees character follow targetPart, but no orientation force
 		if alignPos then
+			alignPos.Enabled = true
+			alignOri.Enabled = false
+			alignPos.MaxForce = 5e5
+			alignPos.Responsiveness = math.clamp(floatVerticalSmooth, 2, 50)
+			alignPos.MaxVelocity = math.max(60, floatForwardSpeed * 2)
+		end
+		floatVelocity = Vector3.new(0, 0, 0)
+		if targetPart and root then targetPart.CFrame = root.CFrame end
+	else
+		if alignPos then
+			alignPos.Enabled = false
 			alignPos.MaxForce = 1e6
 			alignPos.Responsiveness = 18
 			alignPos.MaxVelocity = math.huge
+			alignOri.Enabled = false
 		end
-		alignPos.Enabled = false
-		targetVelocity = Vector3.new(0, 0, 0)
+		floatVelocity = Vector3.new(0, 0, 0)
 	end
 end
 
@@ -273,14 +388,16 @@ btnToggle.MouseButton1Click:Connect(function() enableFly(not flyEnabled) end)
 btnFloat.MouseButton1Click:Connect(function() enableFloat(not floatEnabled) end)
 
 -- ===========================
--- SAFE TP implementation (instant TP to camera look, origin = root -> forward)
+-- SAFE TP: multi-origin raycasts (fix half-body hit)
 -- ===========================
+local function forwardCastFrom(orig, dir, dist, rayParams)
+	return Workspace:Raycast(orig, dir * dist, rayParams)
+end
+
 local function computeTpTarget(distance, withPitch)
 	local cam = Workspace.CurrentCamera
 	if not cam or not root then return nil end
 
-	-- origin near player's root so TP is forward relative to player position
-	local origin = root.Position + Vector3.new(0, math.max(1, root.Size.Y/2), 0)
 	local look = cam.CFrame.LookVector
 	local dir = withPitch and look or Vector3.new(look.X, 0, look.Z)
 	if dir.Magnitude == 0 then return nil end
@@ -293,55 +410,49 @@ local function computeTpTarget(distance, withPitch)
 	if platformPart then table.insert(rayParams.FilterDescendantsInstances, platformPart) end
 	if targetPart then table.insert(rayParams.FilterDescendantsInstances, targetPart) end
 
-	-- forward cast from origin to avoid placing inside wall
-	local cast = Workspace:Raycast(origin, dir * distance, rayParams)
-	local dest
-	if cast then
-		dest = cast.Position - dir * 1.0 -- small backoff from hit
-	else
-		dest = origin + dir * distance
+	local origins = {}
+	if character then
+		local head = character:FindFirstChild("Head")
+		local upper = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+		if head and head.Position then table.insert(origins, head.Position) end
+		if upper and upper.Position then table.insert(origins, upper.Position) end
 	end
+	table.insert(origins, root.Position + Vector3.new(0, 1.5, 0))
+	table.insert(origins, root.Position + Vector3.new(0, 0.5, 0))
 
-	-- ground-check: cast down from above dest to find floor
-	local downOrigin = dest + Vector3.new(0, 60, 0)
-	local downCast = Workspace:Raycast(downOrigin, Vector3.new(0, -1, 0) * 200, rayParams)
-	if downCast then
-		local bufferY = math.max(1.2, (root.Size.Y / 2) + 0.5)
-		local final = Vector3.new(downCast.Position.X, downCast.Position.Y + bufferY, downCast.Position.Z)
+	local bestFinal = nil
+	for _, origin in ipairs(origins) do
+		local cast = forwardCastFrom(origin, dir, distance, rayParams)
+		local dest = nil
+		if cast then dest = cast.Position - dir * 1.0 else dest = origin + dir * distance end
 
-		if final.Y < root.Position.Y - 6 then
-			final = Vector3.new(final.X, root.Position.Y + 2.2, final.Z)
-		end
-
-		-- simple ceiling check: if ceiling immediately above, step back
-		for i = 1, 6 do
-			local upCheck = Workspace:Raycast(final + Vector3.new(0, 0.2, 0), Vector3.new(0, 1, 0) * (root.Size.Y + 0.6), rayParams)
-			if upCheck then
-				final = final - dir * 0.45
-			else
-				break
-			end
-		end
-
-		return final
-	else
-		if withPitch then
-			if dest.Y < root.Position.Y - 6 then
-				dest = Vector3.new(dest.X, root.Position.Y + 2.2, dest.Z)
-			end
+		local downOrigin = dest + Vector3.new(0, 60, 0)
+		local downCast = Workspace:Raycast(downOrigin, Vector3.new(0, -1, 0) * 200, rayParams)
+		if downCast then
+			local bufferY = math.max(1.2, (root.Size.Y / 2) + 0.5)
+			local final = Vector3.new(downCast.Position.X, downCast.Position.Y + bufferY, downCast.Position.Z)
+			if final.Y < root.Position.Y - 6 then final = Vector3.new(final.X, root.Position.Y + 2.2, final.Z) end
 			for i = 1, 6 do
-				local upCheck = Workspace:Raycast(dest + Vector3.new(0, 0.2, 0), Vector3.new(0, 1, 0) * (root.Size.Y + 0.6), rayParams)
-				if upCheck then
-					dest = dest - dir * 0.45
-				else
-					break
-				end
+				local upCheck = Workspace:Raycast(final + Vector3.new(0, 0.2, 0), Vector3.new(0, 1, 0) * (root.Size.Y + 0.6), rayParams)
+				if upCheck then final = final - dir * 0.45 else break end
 			end
-			return dest
+			bestFinal = final
+			break
 		else
-			return Vector3.new(dest.X, root.Position.Y + 2.2, dest.Z)
+			if withPitch then
+				if dest.Y < root.Position.Y - 6 then dest = Vector3.new(dest.X, root.Position.Y + 2.2, dest.Z) end
+				for i = 1, 6 do
+					local upCheck = Workspace:Raycast(dest + Vector3.new(0, 0.2, 0), Vector3.new(0, 1, 0) * (root.Size.Y + 0.6), rayParams)
+					if upCheck then dest = dest - dir * 0.45 else break end
+				end
+				bestFinal = dest
+			else
+				bestFinal = Vector3.new(dest.X, root.Position.Y + 2.2, dest.Z)
+			end
 		end
 	end
+
+	return bestFinal
 end
 
 btnTp.MouseButton1Click:Connect(function()
@@ -358,22 +469,31 @@ btnTp.MouseButton1Click:Connect(function()
 	end
 end)
 
+-- Labels & UI adjustments handlers
 local function updateTpLabel() lblTpVal.Text = tostring(tpDistance) end
 btnTpDec.MouseButton1Click:Connect(function() tpDistance = math.clamp(tpDistance - tpStep, tpMin, tpMax) updateTpLabel() end)
 btnTpInc.MouseButton1Click:Connect(function() tpDistance = math.clamp(tpDistance + tpStep, tpMin, tpMax) updateTpLabel() end)
 updateTpLabel()
 
--- Speed labels
 local function updateSpeedLabel() lblSpeedVal.Text = tostring(math.floor(flySpeed)) end
 btnSpeedDec.MouseButton1Click:Connect(function() flySpeed = math.clamp(flySpeed - 1, 1, 500) updateSpeedLabel() end)
 btnSpeedInc.MouseButton1Click:Connect(function() flySpeed = math.clamp(flySpeed + 1, 1, 500) updateSpeedLabel() end)
 updateSpeedLabel()
 
--- Float speed buttons
-local function updateFloatLabel() lblFloatVal.Text = tostring(math.floor(floatSpeed)) end
-btnFloatDec.MouseButton1Click:Connect(function() floatSpeed = math.clamp(floatSpeed - 10000, 1, 300000000) updateFloatLabel() end)
-btnFloatInc.MouseButton1Click:Connect(function() floatSpeed = math.clamp(floatSpeed + 10000, 1, 400000000) updateFloatLabel() end)
+local function updateFloatLabel() lblFloatVal.Text = tostring(floatForwardSpeed) end
+btnFloatDec.MouseButton1Click:Connect(function() floatForwardSpeed = math.clamp(floatForwardSpeed - 1, 1, 1000) updateFloatLabel() end)
+btnFloatInc.MouseButton1Click:Connect(function() floatForwardSpeed = math.clamp(floatForwardSpeed + 1, 1, 1000) updateFloatLabel() end)
 updateFloatLabel()
+
+local function updateFallLabel() lblFallVal.Text = string.format("%.2f", floatFallMultiplier) end
+btnFallDec.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier - 0.50, 0.2, 5) updateFallLabel() end)
+btnFallInc.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier + 0.50, 0.2, 5) updateFallLabel() end)
+updateFallLabel()
+
+local function updateVertLabel() lblVertVal.Text = tostring(floatVerticalSmooth) end
+btnVertDec.MouseButton1Click:Connect(function() floatVerticalSmooth = math.clamp(floatVerticalSmooth - 0.5, 0.5, 50) updateVertLabel() end)
+btnVertInc.MouseButton1Click:Connect(function() floatVerticalSmooth = math.clamp(floatVerticalSmooth + 0.5, 0.5, 50) updateVertLabel() end)
+updateVertLabel()
 
 btnPlatform.MouseButton1Click:Connect(function() setPlatformEnabled(not platformEnabled) end)
 
@@ -384,36 +504,28 @@ btnUp.MouseButton1Down:Connect(function() startVertical(1) end)
 btnUp.MouseButton1Up:Connect(stopVertical)
 btnDown.MouseButton1Down:Connect(function() startVertical(-1) end)
 btnDown.MouseButton1Up:Connect(stopVertical)
-
 btnUp.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then startVertical(1) end end)
 btnUp.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then stopVertical() end end)
 btnDown.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then startVertical(-1) end end)
 btnDown.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.Touch then stopVertical() end end)
 
--- Keyboard
+-- Keyboard bindings
 UIS.InputBegan:Connect(function(inp, gp)
 	if gp then return end
 	if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
 	if inp.KeyCode == toggleKey then enableFly(not flyEnabled)
 	elseif inp.KeyCode == floatKey then enableFloat(not floatEnabled)
 	elseif inp.KeyCode == tpKey and flyEnabled then
-		-- instant TP
 		local now = tick()
 		if now - lastTpTime < tpCooldown then return end
 		lastTpTime = now
 		local p = computeTpTarget(tpDistance, useCameraPitchForTp)
-		if p and targetPart then
-			targetPart.CFrame = CFrame.new(p)
-			targetVelocity = Vector3.new(0,0,0)
-			tpTargetPos = nil
-			isTpActive = false
-		end
+		if p and targetPart then targetPart.CFrame = CFrame.new(p) targetVelocity = Vector3.new(0,0,0) tpTargetPos = nil isTpActive = false end
 	elseif flyEnabled then
 		if inp.KeyCode == Enum.KeyCode.Space then startVertical(1)
 		elseif inp.KeyCode == Enum.KeyCode.LeftShift then startVertical(-1) end
 	end
 end)
-
 UIS.InputEnded:Connect(function(inp)
 	if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
 	if inp.KeyCode == Enum.KeyCode.Space or inp.KeyCode == Enum.KeyCode.LeftShift then stopVertical() end
@@ -437,50 +549,70 @@ player.CharacterAdded:Connect(onCharacterAdded)
 RunService.Heartbeat:Connect(function(dt)
 	if not root or not targetPart then return end
 
-	-- (сохраняем опцию сглаженной TP, но основной режим — instant)
+	-- platform standing detection (client ping; server should verify)
+	if platformPart then
+		local yDiff = (root.Position - platformPart.Position).Y
+		if math.abs(yDiff + platformOffset) < 0.9 and (root.Position - platformPart.Position).Magnitude < 6 then
+			local evt = ReplicatedStorage:FindFirstChild(PLATFORM_EVENT_NAME)
+			if evt and evt:IsA("RemoteEvent") then pcall(function() evt:FireServer(true) end) end
+		else
+			local evt = ReplicatedStorage:FindFirstChild(PLATFORM_EVENT_NAME)
+			if evt and evt:IsA("RemoteEvent") then pcall(function() evt:FireServer(false) end) end
+		end
+	end
+
 	if isTpActive and tpTargetPos then
 		local cur = targetPart.Position
 		local alpha = math.clamp(tpLerpFactor * math.max(dt * 60, 1), 0, 1)
 		local new = cur:Lerp(tpTargetPos, alpha)
 		targetPart.CFrame = CFrame.new(new)
-		if (tpTargetPos - new).Magnitude < 0.25 then
-			isTpActive = false
-			tpTargetPos = nil
-		end
+		if (tpTargetPos - new).Magnitude < 0.25 then isTpActive = false tpTargetPos = nil end
 	end
 
-	-- Float mode (улучшенная версия: gentler align + lerp на targetPart, менее "палево")
+	-- FLOAT MODE (completely separate from FLY)
 	if floatEnabled then
-		if alignPos then alignPos.Enabled = true; alignOri.Enabled = false end
-
-		local moveDir = humanoid and humanoid.MoveDirection or Vector3.new(0, 0, 0)
-		local hor = Vector3.new(moveDir.X, 0, moveDir.Z) * floatSpeed
-		local vert = Vector3.new(0, -floatSpeed * 0.35, 0) -- падение чуть медленнее
-		local desiredVel = hor + vert
-
-		local lerpFactor = math.clamp(acceleration * dt, 0, 1)
-		targetVelocity = targetVelocity:Lerp(desiredVel, lerpFactor)
-
-		local desiredDelta = targetVelocity * dt
-		if desiredDelta.Magnitude > maxStepPerFrame then
-			desiredDelta = desiredDelta.Unit * maxStepPerFrame
+		-- gentle Align so character follows targetPart without orientation forcing
+		if alignPos then
+			alignPos.Enabled = true
+			alignOri.Enabled = false
+			alignPos.MaxForce = 5e5
+			alignPos.Responsiveness = math.clamp(floatVerticalSmooth, 2, 50)
+			alignPos.MaxVelocity = math.max(60, floatForwardSpeed * 2)
 		end
+
+		local moveDir = humanoid and humanoid.MoveDirection or Vector3.new(0,0,0)
+		local hor = Vector3.new(moveDir.X, 0, moveDir.Z) * floatForwardSpeed
+
+		local vert
+		if vertControl ~= 0 then
+			vert = vertControl * floatForwardSpeed * 0.7
+		else
+			-- gentle downward bias scaled by floatFallMultiplier and floatForwardSpeed to keep units consistent
+			vert = -9.81 * (floatFallMultiplier - 1) -- gravity-like bias; user controls multiplier
+		end
+
+		local desiredVel = hor + Vector3.new(0, vert, 0)
+
+		-- smooth floatVelocity
+		local lerpFactor = math.clamp(acceleration * dt, 0, 1)
+		floatVelocity = floatVelocity:Lerp(desiredVel, lerpFactor)
+
+		local desiredDelta = floatVelocity * dt
+		if desiredDelta.Magnitude > floatMaxStepPerFrame then desiredDelta = desiredDelta.Unit * floatMaxStepPerFrame end
 
 		local currentPos = targetPart.Position
 		local newPos = currentPos + desiredDelta
 
-		-- Плавнее двигаем targetPart (мелкие lerp'ы, а Align подтянет персонажа мягко)
-		local lerpForTarget = math.clamp(0.06 * math.max(dt * 60, 1), 0, 1) -- медленный, чтобы "отпуск" был дольше
+		local lerpForTarget = math.clamp(0.06 * math.max(dt * 60, 1), 0, 1)
 		targetPart.CFrame = targetPart.CFrame:Lerp(CFrame.new(newPos), lerpForTarget)
 
-		-- platform при float не создаётся автоматически
 		return
 	end
 
-	-- Если fly выключен — держим цель на root
+	-- neither float nor fly: keep target on root
 	if not flyEnabled then
 		targetPart.CFrame = root.CFrame
-		targetVelocity = Vector3.new(0, 0, 0)
+		targetVelocity = Vector3.new(0,0,0)
 		if platformEnabled and platformPart then
 			local desired = root.Position - Vector3.new(0, platformOffset, 0)
 			local pNew = platformPart.Position:Lerp(desired, math.clamp(platformLerp / math.max(dt, 1/60), 0, 1))
@@ -489,43 +621,40 @@ RunService.Heartbeat:Connect(function(dt)
 		return
 	end
 
-	-- Movement input (fly)
-	local moveDir = humanoid and humanoid.MoveDirection or Vector3.new(0, 0, 0)
+	-- FLY behaviour (unchanged)
+	local moveDir = humanoid and humanoid.MoveDirection or Vector3.new(0,0,0)
 	local hor = Vector3.new(moveDir.X, 0, moveDir.Z) * flySpeed
 	local vert = Vector3.new(0, vertControl * flySpeed, 0)
 	local desiredVel = hor + vert
 
-	-- Smooth velocity
 	local lerpFactor = math.clamp(acceleration * dt, 0, 1)
 	targetVelocity = targetVelocity:Lerp(desiredVel, lerpFactor)
 
 	local desiredDelta = targetVelocity * dt
-	if desiredDelta.Magnitude > maxStepPerFrame then
-		desiredDelta = desiredDelta.Unit * maxStepPerFrame
-	end
+	if desiredDelta.Magnitude > maxStepPerFrame then desiredDelta = desiredDelta.Unit * maxStepPerFrame end
 
 	local currentPos = targetPart.Position
 	local wantedPos = currentPos + desiredDelta
 	local anchorBack = root.Position
 	wantedPos = anchorBack:Lerp(wantedPos, 0.92)
-
 	local alpha = math.clamp(smoothing / math.max(dt, 1/60), 0, 1)
 	local newPos = currentPos:Lerp(wantedPos, alpha)
-
 	targetPart.CFrame = CFrame.new(newPos)
 
-	-- orient target to camera flat forward (upright)
+	-- soft orientation to camera flat forward
 	local cam = Workspace.CurrentCamera
 	if cam then
 		local look = cam.CFrame.LookVector
 		local flat = Vector3.new(look.X, 0, look.Z)
 		if flat.Magnitude > 1e-4 then
 			local dir = flat.Unit
-			targetPart.CFrame = CFrame.new(newPos, newPos + dir)
+			local desiredCFrame = CFrame.new(newPos, newPos + dir)
+			local curCFrame = targetPart.CFrame
+			targetPart.CFrame = curCFrame:Lerp(desiredCFrame, 0.28)
 		end
 	end
 
-	-- platform follow (smoothed)
+	-- platform follow
 	if platformEnabled and platformPart then
 		local desired = newPos - Vector3.new(0, platformOffset, 0)
 		local pNew = platformPart.Position:Lerp(desired, math.clamp(platformLerp / math.max(dt, 1/60), 0, 1))
@@ -533,9 +662,21 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
--- cleanup on script destroy
+-- cleanup
 script.Destroying:Connect(function()
 	cleanFlyObjects()
+	destroyPlatformPart()
+	if screenGui and screenGui.Parent then screenGui:Destroy() end
+end)
+
+-- Server note (optional): create ReplicatedStorage RemoteEvent named "FlyPlatformPing" for server verification/debounce.
+-- Example server snippet (ServerScriptService):
+-- local ReplicatedStorage = game:GetService("ReplicatedStorage")
+-- local event = ReplicatedStorage:FindFirstChild("FlyPlatformPing") or Instance.new("RemoteEvent", ReplicatedStorage); event.Name = "FlyPlatformPing"
+-- event.OnServerEvent:Connect(function(player, standing) print(player.Name, "platform standing:", standing) end)
+
+-- End of script
+
 	destroyPlatformPart()
 	if screenGui and screenGui.Parent then screenGui:Destroy() end
 end)
