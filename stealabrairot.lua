@@ -486,8 +486,8 @@ btnFloatInc.MouseButton1Click:Connect(function() floatForwardSpeed = math.clamp(
 updateFloatLabel()
 
 local function updateFallLabel() lblFallVal.Text = string.format("%.2f", floatFallMultiplier) end
-btnFallDec.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier - 0.50, 0.2, 5) updateFallLabel() end)
-btnFallInc.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier + 0.50, 0.2, 5) updateFallLabel() end)
+btnFallDec.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier - 0.70, 0.2, 5) updateFallLabel() end)
+btnFallInc.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier + 0.70, 0.2, 5) updateFallLabel() end)
 updateFallLabel()
 
 local function updateVertLabel() lblVertVal.Text = tostring(floatVerticalSmooth) end
@@ -676,7 +676,3 @@ end)
 -- event.OnServerEvent:Connect(function(player, standing) print(player.Name, "platform standing:", standing) end)
 
 -- End of script
-
-	destroyPlatformPart()
-	if screenGui and screenGui.Parent then screenGui:Destroy() end
-end)
