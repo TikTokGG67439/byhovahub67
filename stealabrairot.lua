@@ -85,18 +85,38 @@ local function makeBtn(parent, x, y, w, h, text)
 end
 
 -- Main compact frame (exact requested size)
+
 local function makeMainFrame()
 	local frame = Instance.new("Frame")
 	frame.Name = "FlyMainFrame"
-	frame.Size = UDim2.new(0, 300, 0, 299) -- exact
-	frame.Position = UDim2.new(0, 376, 0, 160)
+	frame.Size = UDim2.new(0, 330, 0, 330) -- exact
+	frame.Position = UDim2.new(0, 376, 0, 120)
 	frame.BackgroundTransparency = 0.05
 	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 	frame.Parent = screenGui
 	local corner = Instance.new("UICorner", frame)
 	corner.CornerRadius = UDim.new(0, 12)
 
-	local stroke = Instance.new("UIStroke", frame)
+local imagebutton = Instance.new("ImageButton")
+imagebutton.Image = "rbxassetid://106730820213474"
+imagebutton.Position = UDim2.new(0.476, 0,0.400, 0)
+imagebutton.Size = UDim2.new(0, 70, 0, 70)
+imagebutton.Active = true
+imagebutton.Draggable = true
+imagebutton.Parent = screenGui
+local uistoke = Instance.new("UICorner")
+uistoke.Parent = imagebutton
+uistoke.CornerRadius = UDim.new(0, 10)
+local uistokeke = Instance.new("UIStroke")
+uistokeke.Thickness = 2
+uistokeke.Color = Color3.fromRGB(167, 94, 30)
+uistokeke.Parent = imagebutton
+imagebutton.MouseButton1Click:Connect(function()
+	frame.Visible = not frame.Visible
+end)
+
+
+	local stroke = Instance.new("UIStroke", frame, imagebutton)
 	stroke.Thickness = 2
 	stroke.Color = Color3.fromRGB(34, 111, 255) -- initial blue
 
