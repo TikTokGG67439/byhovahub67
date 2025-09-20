@@ -89,7 +89,7 @@ local function makeMainFrame()
 	local frame = Instance.new("Frame")
 	frame.Name = "FlyMainFrame"
 	frame.Size = UDim2.new(0, 780, 0, 140)
-	frame.Position = UDim2.new(0, 16, 0, 16)
+	frame.Position = UDim2.new(0, 156, 0, 180)
 	frame.BackgroundTransparency = 0.05
 	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 	frame.Parent = screenGui
