@@ -486,13 +486,13 @@ btnFloatInc.MouseButton1Click:Connect(function() floatForwardSpeed = math.clamp(
 updateFloatLabel()
 
 local function updateFallLabel() lblFallVal.Text = string.format("%.2f", floatFallMultiplier) end
-btnFallDec.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier - 200, 0.2, 200000) updateFallLabel() end)
-btnFallInc.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier + 200, 0.2, 200000) updateFallLabel() end)
+btnFallDec.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier - 1, 0.2, 100) updateFallLabel() end)
+btnFallInc.MouseButton1Click:Connect(function() floatFallMultiplier = math.clamp(floatFallMultiplier + 1, 0.2, 100) updateFallLabel() end)
 updateFallLabel()
 
 local function updateVertLabel() lblVertVal.Text = tostring(floatVerticalSmooth) end
-btnVertDec.MouseButton1Click:Connect(function() floatVerticalSmooth = math.clamp(floatVerticalSmooth - 0.5, 0.5, 50) updateVertLabel() end)
-btnVertInc.MouseButton1Click:Connect(function() floatVerticalSmooth = math.clamp(floatVerticalSmooth + 0.5, 0.5, 50) updateVertLabel() end)
+btnVertDec.MouseButton1Click:Connect(function() floatVerticalSmooth = math.clamp(floatVerticalSmooth - 1, 0.5, 150) updateVertLabel() end)
+btnVertInc.MouseButton1Click:Connect(function() floatVerticalSmooth = math.clamp(floatVerticalSmooth + 1, 0.5, 150) updateVertLabel() end)
 updateVertLabel()
 
 btnPlatform.MouseButton1Click:Connect(function() setPlatformEnabled(not platformEnabled) end)
