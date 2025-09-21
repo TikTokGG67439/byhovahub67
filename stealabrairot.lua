@@ -27,7 +27,7 @@ local character, humanoid, root = waitForCharacter()
 -- ===========================
 local flyEnabled = false
 local vertControl = 0 -- -1 down, 0 none, 1 up
-local flySpeed = 53
+local flySpeed = 29
 
 -- FLOAT params (separate from fly)
 local floatEnabled = false
