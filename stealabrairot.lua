@@ -31,9 +31,9 @@ local flySpeed = 29
 
 -- FLOAT params (separate from fly)
 local floatEnabled = false
-local floatForwardSpeed = 53
-local floatFallMultiplier = 1.10
-local floatVerticalSmooth = 6
+local floatForwardSpeed = 111
+local floatFallMultiplier = 8
+local floatVerticalSmooth = 11
 local floatMaxStepPerFrame = 12
 
 local smoothing = 0.12
@@ -586,11 +586,11 @@ local function refreshFall()
 	fallLbl.Text = "Float Fall: " .. string.format("%.2f", floatFallMultiplier)
 end
 fallDec.MouseButton1Click:Connect(function()
-	floatFallMultiplier = math.clamp(floatFallMultiplier - 0.3, 0.2, 15)
+	floatFallMultiplier = math.clamp(floatFallMultiplier - 0.3, 0.2, 30)
 	refreshFall()
 end)
 fallInc.MouseButton1Click:Connect(function()
-	floatFallMultiplier = math.clamp(floatFallMultiplier + 0.3, 0.2, 15)
+	floatFallMultiplier = math.clamp(floatFallMultiplier + 0.3, 0.2, 30)
 	refreshFall()
 end)
 refreshFall()
@@ -752,3 +752,4 @@ script.Destroying:Connect(function()
 end)
 
 -- end of script
+
