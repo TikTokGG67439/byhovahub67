@@ -1,6 +1,3 @@
--- Smooth Fly v3 — Compact UI edition
--- Put into StarterPlayerScripts (replaces prior UI only; movement logic unchanged)
--- Compact frame, NovaHub animated per-letter title, Arcade font, TextScaled = true
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -12,7 +9,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 if not player then return end
 
--- wait for initial character
+-- WAIT FOR CHARACTER
 local function waitForCharacter()
 	local c = player.Character or player.CharacterAdded:Wait()
 	local h = c:WaitForChild("Humanoid")
@@ -22,9 +19,10 @@ end
 
 local character, humanoid, root = waitForCharacter()
 
--- ===========================
--- CONFIG (adjust as needed)
--- ===========================
+----------------------------------------------------------------
+-- SMOOTH FLY V3 (UI + movement) - kept intact, UI compact edition
+----------------------------------------------------------------
+-- CONFIG
 local flyEnabled = false
 local vertControl = 0 -- -1 down, 0 none, 1 up
 local flySpeed = 29
@@ -60,11 +58,11 @@ local platformSize = Vector3.new(5.5, 0.5, 5.5)
 local platformColor = Color3.fromRGB(120, 120, 120)
 local PLATFORM_EVENT_NAME = "FlyPlatformPing"
 
--- UI root
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "FlyGUI_v3_compact"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = player:WaitForChild("PlayerGui")
+-- FLY GUI (namespaced to avoid collisions)
+local flyScreenGui = Instance.new("ScreenGui")
+flyScreenGui.Name = "FlyGUI_v3_compact"
+flyScreenGui.ResetOnSpawn = false
+flyScreenGui.Parent = player:WaitForChild("PlayerGui")
 
 -- helper: button creator (TextScaled true, Arcade font)
 local function makeBtn(parent, x, y, w, h, text)
@@ -84,8 +82,7 @@ local function makeBtn(parent, x, y, w, h, text)
 	return b
 end
 
--- Main compact frame (exact requested size)
-
+-- Main compact frame
 local function makeMainFrame()
 	local frame = Instance.new("Frame")
 	frame.Name = "FlyMainFrame"
@@ -93,30 +90,27 @@ local function makeMainFrame()
 	frame.Position = UDim2.new(0, 376, 0, 120)
 	frame.BackgroundTransparency = 0.05
 	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-	frame.Parent = screenGui
+	frame.Parent = flyScreenGui
 	local corner = Instance.new("UICorner", frame)
 	corner.CornerRadius = UDim.new(0, 12)
 
-local imagebutton = Instance.new("ImageButton")
-imagebutton.Image = "rbxassetid://106730820213474"
-imagebutton.Position = UDim2.new(0.476, 0,0.400, 0)
-imagebutton.Size = UDim2.new(0, 70, 0, 70)
-imagebutton.Active = true
-imagebutton.Draggable = true
-imagebutton.Parent = screenGui
-local uistoke = Instance.new("UICorner")
-uistoke.Parent = imagebutton
-uistoke.CornerRadius = UDim.new(0, 10)
-local uistokeke = Instance.new("UIStroke")
-uistokeke.Thickness = 2
-uistokeke.Color = Color3.fromRGB(167, 94, 30)
-uistokeke.Parent = imagebutton
-imagebutton.MouseButton1Click:Connect(function()
-	frame.Visible = not frame.Visible
-end)
+	local imagebutton = Instance.new("ImageButton")
+	imagebutton.Image = "rbxassetid://106730820213474"
+	imagebutton.Position = UDim2.new(0.476, 0,0.400, 0)
+	imagebutton.Size = UDim2.new(0, 70, 0, 70)
+	imagebutton.Active = true
+	imagebutton.Draggable = true
+	imagebutton.Parent = flyScreenGui
+	local uistoke = Instance.new("UICorner", imagebutton)
+	uistoke.CornerRadius = UDim.new(0, 10)
+	local uistokeke = Instance.new("UIStroke", imagebutton)
+	uistokeke.Thickness = 2
+	uistokeke.Color = Color3.fromRGB(167, 94, 30)
+	imagebutton.MouseButton1Click:Connect(function()
+		frame.Visible = not frame.Visible
+	end)
 
-
-	local stroke = Instance.new("UIStroke", frame, imagebutton)
+	local stroke = Instance.new("UIStroke", frame)
 	stroke.Thickness = 2
 	stroke.Color = Color3.fromRGB(34, 111, 255) -- initial blue
 
@@ -240,6 +234,9 @@ local btnFloat = makeBtn(mainFrame, 8, 132, 120, 36, "Float: OFF")
 local btnPlatform = makeBtn(mainFrame, 8, 178, 120, 30, "Platform: OFF")
 local btnTp = makeBtn(mainFrame, 8, 218, 120, 26, "Tp")
 
+-- NEW: JumpUI master toggle (in Fly mainFrame)
+local btnJumpUI = makeBtn(mainFrame, 8, 260, 120, 30, "JumpUI: OFF")
+
 -- Fly speed display & adjust
 local flySpeedDec = makeBtn(mainFrame, 136, 86, 28, 26, "−")
 local flySpeedLbl = Instance.new("TextLabel", mainFrame)
@@ -253,8 +250,7 @@ flySpeedLbl.TextXAlignment = Enum.TextXAlignment.Left
 flySpeedLbl.TextColor3 = Color3.fromRGB(230,230,230)
 local flySpeedInc = makeBtn(mainFrame, 272, 86, 28, 26, "+")
 
--- === FLOAT controls: main two controls visible ===
--- Float Speed (horizontal)
+-- FLOAT controls
 local floatSpeedDec = makeBtn(mainFrame, 136, 132, 28, 30, "−")
 local floatSpeedLbl = Instance.new("TextLabel", mainFrame)
 floatSpeedLbl.Size = UDim2.new(0, 132, 0, 30)
@@ -267,7 +263,6 @@ floatSpeedLbl.TextXAlignment = Enum.TextXAlignment.Left
 floatSpeedLbl.TextColor3 = Color3.fromRGB(230,230,230)
 local floatSpeedInc = makeBtn(mainFrame, 272, 132, 28, 30, "+")
 
--- Float Smooth (vertical smoothing / gentle release)
 local floatSmoothDec = makeBtn(mainFrame, 136, 168, 28, 30, "−")
 local floatSmoothLbl = Instance.new("TextLabel", mainFrame)
 floatSmoothLbl.Size = UDim2.new(0, 132, 0, 30)
@@ -280,7 +275,6 @@ floatSmoothLbl.TextXAlignment = Enum.TextXAlignment.Left
 floatSmoothLbl.TextColor3 = Color3.fromRGB(230,230,230)
 local floatSmoothInc = makeBtn(mainFrame, 272, 168, 28, 30, "+")
 
--- Small compact Fall multiplier control (less prominent, but available)
 local fallDec = makeBtn(mainFrame, 136, 204, 28, 22, "−")
 local fallLbl = Instance.new("TextLabel", mainFrame)
 fallLbl.Size = UDim2.new(0, 160, 0, 22)
@@ -358,7 +352,7 @@ local floatVelocity = Vector3.new(0,0,0)
 local tpTargetPos = nil
 local isTpActive = false
 
--- platform helpers unchanged
+-- platform helpers
 local function createPlatformPart()
 	if platformPart and platformPart.Parent then return end
 	platformPart = Instance.new("Part")
@@ -483,7 +477,7 @@ btnTp.MouseButton1Click:Connect(function()
 	local now = tick()
 	if now - lastTpTime < tpCooldown then return end
 	lastTpTime = now
-	-- re-use computeTpTarget logic (kept minimal here to avoid forward ref issues)
+	-- re-use computeTpTarget logic
 	local cam = Workspace.CurrentCamera
 	if not cam or not root then return end
 	local look = cam.CFrame.LookVector
@@ -551,7 +545,7 @@ flySpeedDec.MouseButton1Click:Connect(function() flySpeed = math.clamp(flySpeed 
 flySpeedInc.MouseButton1Click:Connect(function() flySpeed = math.clamp(flySpeed + 1, 1, 500); refreshFlyLabel() end)
 refreshFlyLabel()
 
--- FLOAT controls: main two (movement speed & vertical smooth)
+-- FLOAT controls
 local function refreshFloatSpeed()
 	floatSpeedLbl.Text = "Float Speed: " .. tostring(math.floor(floatForwardSpeed))
 end
@@ -581,7 +575,6 @@ floatSmoothInc.MouseButton1Click:Connect(function()
 end)
 refreshFloatSmooth()
 
--- small fall multiplier control (compact)
 local function refreshFall()
 	fallLbl.Text = "Float Fall: " .. string.format("%.2f", floatFallMultiplier)
 end
@@ -630,7 +623,7 @@ end
 player.CharacterAdded:Connect(onCharacterAdded)
 
 -- ===========================
--- Main loop: movement / float / fly logic (kept intact)
+-- MAIN LOOP: movement / float / fly logic
 -- ===========================
 RunService.Heartbeat:Connect(function(dt)
 	if not root or not targetPart then return end
@@ -654,7 +647,7 @@ RunService.Heartbeat:Connect(function(dt)
 		if (tpTargetPos - new).Magnitude < 0.25 then isTpActive = false tpTargetPos = nil end
 	end
 
-	-- FLOAT (distinct from fly)
+	-- FLOAT
 	if floatEnabled then
 		if alignPos then
 			alignPos.Enabled = true
@@ -671,7 +664,6 @@ RunService.Heartbeat:Connect(function(dt)
 		if vertControl ~= 0 then
 			vert = vertControl * floatForwardSpeed * 0.7
 		else
-			-- gravity-like gentle fall; floatFallMultiplier controls how fast you release downwards
 			vert = -9.81 * (floatFallMultiplier - 1)
 		end
 
@@ -703,7 +695,7 @@ RunService.Heartbeat:Connect(function(dt)
 		return
 	end
 
-	-- FLY behavior (unchanged)
+	-- FLY
 	local moveDir = humanoid and humanoid.MoveDirection or Vector3.new(0,0,0)
 	local hor = Vector3.new(moveDir.X, 0, moveDir.Z) * flySpeed
 	local vert = Vector3.new(0, vertControl * flySpeed, 0)
@@ -744,12 +736,424 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
--- cleanup on destroy
-script.Destroying:Connect(function()
+local function flyCleanup()
 	if targetPart and targetPart.Parent then targetPart:Destroy() end
 	destroyPlatformPart()
-	if screenGui and screenGui.Parent then screenGui:Destroy() end
+	if flyScreenGui and flyScreenGui.Parent then flyScreenGui:Destroy() end
+end
+
+----------------------------------------------------------------
+-- GRAVITY + BOOSTER (VectorForce) — kept intact, namespaced
+----------------------------------------------------------------
+local gravityScreenGui = Instance.new("ScreenGui")
+gravityScreenGui.Name = "GravityBooster_GUI"
+gravityScreenGui.ResetOnSpawn = false
+gravityScreenGui.Parent = player:WaitForChild("PlayerGui")
+gravityScreenGui.Enabled = false -- hidden by default, controlled by JumpUI button
+
+local originalGravity = Workspace.Gravity
+
+-- CONFIG (kept same as original)
+local defaultGravity = 10
+local gravityStep = 10
+local gravityMin, gravityMax = 0, 1000
+
+local defaultBooster = 4.5
+local boosterStep = 0.5
+local boosterMin, boosterMax = 0, 50
+
+-- UI
+local gravityFrame = Instance.new("Frame")
+gravityFrame.Name = "Gravity_MainFrame"
+gravityFrame.Size = UDim2.new(0, 200, 0, 140)
+gravityFrame.Position = UDim2.new(0.5, -100, 0.08, 0)
+gravityFrame.AnchorPoint = Vector2.new(0.5, 0)
+gravityFrame.BackgroundColor3 = Color3.fromRGB(22,22,22)
+gravityFrame.Active = true
+gravityFrame.Draggable = true
+gravityFrame.Parent = gravityScreenGui
+
+local textlabb = Instance.new("TextLabel")
+textlabb.BackgroundTransparency = 1
+textlabb.TextColor3 = Color3.fromRGB(171, 63, 0)
+textlabb.Text = "TT: @novahub67"
+textlabb.Font = Enum.Font.Arcade
+textlabb.TextScaled = true
+textlabb.Parent = gravityFrame
+textlabb.Position = UDim2.new(0, -27, 0, 25)
+textlabb.Size = UDim2.new(1, -12, 0, 12)
+local UiStlextlabb = Instance.new("UIStroke", textlabb)
+UiStlextlabb.Thickness = 2
+UiStlextlabb.Color = Color3.fromRGB(0, 132, 132)
+
+local uicorner = Instance.new("UICorner", gravityFrame)
+uicorner.CornerRadius = UDim.new(0, 8)
+
+local stroke = Instance.new("UIStroke", gravityFrame)
+stroke.Thickness = 5
+stroke.Color = Color3.fromRGB(34,111,255)
+
+-- Title per-letter
+local titleRoot = Instance.new("Frame", gravityFrame)
+titleRoot.Size = UDim2.new(1, -12, 0, 22)
+titleRoot.Position = UDim2.new(0, 6, 0, 6)
+titleRoot.BackgroundTransparency = 1
+
+local titleText = "By NovaHub"
+local list = Instance.new("UIListLayout", titleRoot)
+list.FillDirection = Enum.FillDirection.Horizontal
+list.HorizontalAlignment = Enum.HorizontalAlignment.Left
+list.SortOrder = Enum.SortOrder.LayoutOrder
+list.Padding = UDim.new(0, 2)
+
+local letterLabels = {}
+for i = 1, #titleText do
+	local ch = titleText:sub(i,i)
+	local lbl = Instance.new("TextLabel")
+	lbl.Size = UDim2.new(0, 12, 1, 0)
+	lbl.BackgroundTransparency = 1
+	lbl.Font = Enum.Font.Arcade
+	lbl.Text = ch
+	lbl.TextSize = 20
+	lbl.TextScaled = true
+	lbl.TextColor3 = Color3.fromRGB(255,140,34) -- start orange
+	lbl.Parent = titleRoot
+
+	local ls = Instance.new("UIStroke", lbl)
+	ls.Thickness = 1
+	ls.Color = Color3.fromRGB(0,0,0)
+	ls.Transparency = 0.65
+
+	table.insert(letterLabels, lbl)
+end
+
+-- Gravity UI (kept structure)
+local gravLabel = Instance.new("TextLabel", gravityFrame)
+gravLabel.Size = UDim2.new(0.6, -8, 0, 22)
+gravLabel.Position = UDim2.new(0, 6, 0, 30)
+gravLabel.BackgroundTransparency = 1
+gravLabel.Font = Enum.Font.Arcade
+gravLabel.TextScaled = true
+gravLabel.TextXAlignment = Enum.TextXAlignment.Left
+gravLabel.TextColor3 = Color3.fromRGB(230,230,230)
+
+local gravBox = Instance.new("TextBox", gravityFrame)
+gravBox.Size = UDim2.new(0.4, -12, 0, 22)
+gravBox.Position = UDim2.new(0.6, 0, 0, 30)
+gravBox.BackgroundColor3 = Color3.fromRGB(30,30,30)
+gravBox.Font = Enum.Font.Arcade
+gravBox.TextScaled = true
+gravBox.Text = tostring(defaultGravity)
+gravBox.TextColor3 = Color3.new(1,1,1)
+gravBox.ClearTextOnFocus = false
+local gravBoxCorner = Instance.new("UICorner", gravBox); gravBoxCorner.CornerRadius = UDim.new(0,6)
+
+local btnGravMinus = Instance.new("TextButton", gravityFrame)
+btnGravMinus.Size = UDim2.new(0, 36, 0, 20)
+btnGravMinus.Position = UDim2.new(0, 110, 0, 56)
+btnGravMinus.Text = "−"
+btnGravMinus.TextColor3 = Color3.fromRGB(230, 230, 230)
+btnGravMinus.Font = Enum.Font.Arcade
+btnGravMinus.TextScaled = true
+btnGravMinus.BackgroundColor3 = Color3.fromRGB(28,28,28)
+local btnGravMinusCorner = Instance.new("UICorner", btnGravMinus); btnGravMinusCorner.CornerRadius = UDim.new(0,6)
+
+local btnGravPlus = Instance.new("TextButton", gravityFrame)
+btnGravPlus.Size = UDim2.new(0, 36, 0, 20)
+btnGravPlus.Position = UDim2.new(1, -10, 0, 56)
+btnGravPlus.AnchorPoint = Vector2.new(1,0)
+btnGravPlus.Text = "+"
+btnGravPlus.TextColor3 = Color3.fromRGB(230, 230, 230)
+btnGravPlus.Font = Enum.Font.Arcade
+btnGravPlus.TextScaled = true
+btnGravPlus.BackgroundColor3 = Color3.fromRGB(28,28,28)
+local btnGravPlusCorner = Instance.new("UICorner", btnGravPlus); btnGravPlusCorner.CornerRadius = UDim.new(0,6)
+
+local gravToggle = Instance.new("TextButton", gravityFrame)
+gravToggle.Size = UDim2.new(0, 100, 0, 30)
+gravToggle.Position = UDim2.new(0.5, -50, 0, 50)
+gravToggle.AnchorPoint = Vector2.new(0.5,0)
+gravToggle.Text = "Gravity: OFF"
+gravToggle.Font = Enum.Font.Arcade
+gravToggle.TextScaled = true
+gravToggle.BackgroundColor3 = Color3.fromRGB(44,44,44)
+gravToggle.TextColor3 = Color3.new(1,1,1)
+local gravToggleCorner = Instance.new("UICorner", gravToggle); gravToggleCorner.CornerRadius = UDim.new(0,6)
+
+-- Booster UI
+local boostLabel = Instance.new("TextLabel", gravityFrame)
+boostLabel.Size = UDim2.new(0.5, -8, 0, 30)
+boostLabel.Position = UDim2.new(0, 6, 0, 79)
+boostLabel.BackgroundTransparency = 1
+boostLabel.Font = Enum.Font.Arcade
+boostLabel.TextScaled = true
+boostLabel.TextXAlignment = Enum.TextXAlignment.Left
+boostLabel.Text = "Booster:"
+boostLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+
+local boostBox = Instance.new("TextBox", gravityFrame)
+boostBox.Size = UDim2.new(0.35, -1, 0, 20)
+boostBox.Position = UDim2.new(0.5, 20, 0, 84)
+boostBox.BackgroundColor3 = Color3.fromRGB(30,30,30)
+boostBox.Font = Enum.Font.Arcade
+boostBox.TextScaled = true
+boostBox.Text = tostring(defaultBooster)
+boostBox.TextColor3 = Color3.fromRGB(230, 230, 230)
+boostBox.ClearTextOnFocus = false
+local boostBoxCorner = Instance.new("UICorner", boostBox); boostBoxCorner.CornerRadius = UDim.new(0,6)
+
+local btnBoostMinus = Instance.new("TextButton", gravityFrame)
+btnBoostMinus.Size = UDim2.new(0, 28, 0, 18)
+btnBoostMinus.Position = UDim2.new(0, 120, 0, 108)
+btnBoostMinus.Text = "−"
+btnBoostMinus.TextColor3 = Color3.fromRGB(230, 230, 230)
+btnBoostMinus.Font = Enum.Font.Arcade
+btnBoostMinus.TextScaled = true
+btnBoostMinus.BackgroundColor3 = Color3.fromRGB(28,28,28)
+local btnBoostMinusCorner = Instance.new("UICorner", btnBoostMinus); btnBoostMinusCorner.CornerRadius = UDim.new(0,6)
+
+local btnBoostPlus = Instance.new("TextButton", gravityFrame)
+btnBoostPlus.Size = UDim2.new(0, 28, 0, 18)
+btnBoostPlus.Position = UDim2.new(1, -14, 0, 108)
+btnBoostPlus.AnchorPoint = Vector2.new(1,0)
+btnBoostPlus.Text = "+"
+btnBoostPlus.TextColor3 = Color3.fromRGB(230, 230, 230)
+btnBoostPlus.Font = Enum.Font.Arcade
+btnBoostPlus.TextScaled = true
+btnBoostPlus.BackgroundColor3 = Color3.fromRGB(28,28,28)
+local btnBoostPlusCorner = Instance.new("UICorner", btnBoostPlus); btnBoostPlusCorner.CornerRadius = UDim.new(0,6)
+
+local boostToggle = Instance.new("TextButton", gravityFrame)
+boostToggle.Size = UDim2.new(0, 100, 0, 31)
+boostToggle.Position = UDim2.new(0.5, -50, 0, 108)
+boostToggle.AnchorPoint = Vector2.new(0.5,0)
+boostToggle.Text = "Booster: OFF"
+boostToggle.TextColor3 = Color3.fromRGB(230, 230, 230)
+boostToggle.Font = Enum.Font.Arcade
+boostToggle.TextScaled = true
+boostToggle.BackgroundColor3 = Color3.fromRGB(44,44,44)
+local boostToggleCorner = Instance.new("UICorner", boostToggle); boostToggleCorner.CornerRadius = UDim.new(0,6)
+
+-- State (kept same)
+local currentGravity = math.clamp(tonumber(gravBox.Text) or defaultGravity, gravityMin, gravityMax)
+local gravityApplied = false
+
+local currentBooster = math.clamp(tonumber(boostBox.Text) or defaultBooster, boosterMin, boosterMax)
+local boosterEnabled = false
+
+-- VectorForce objects
+local vf = nil
+local vfAttachment = nil
+local lastMass = nil
+
+-- Helpers
+local function refreshGravityLabels()
+	gravLabel.Text = "Gravity: " .. tostring(currentGravity)
+	gravBox.Text = tostring(currentGravity)
+	gravToggle.Text = gravityApplied and ("Gravity: ON ("..tostring(currentGravity)..")") or "Gravity: OFF"
+
+	boostLabel.Text = "Booster: " .. string.format("%.2f", currentBooster)
+	boostBox.Text = tostring(currentBooster)
+	boostToggle.Text = boosterEnabled and "Booster: ON" or "Booster: OFF"
+end
+
+local function applyGravity(val)
+	val = math.clamp(val, gravityMin, gravityMax)
+	Workspace.Gravity = val
+end
+
+local function restoreOriginalGravity()
+	if originalGravity then
+		Workspace.Gravity = originalGravity
+	end
+end
+
+local function createVectorForce(rootPart)
+	-- cleanup existing
+	if vf then pcall(function() vf:Destroy() end) end
+	if vfAttachment then pcall(function() vfAttachment:Destroy() end) end
+
+	vfAttachment = Instance.new("Attachment")
+	vfAttachment.Name = "NovaHub_Boost_Attachment"
+	vfAttachment.Parent = rootPart
+
+	vf = Instance.new("VectorForce")
+	vf.Name = "NovaHub_Boost_VectorForce"
+	vf.Attachment0 = vfAttachment
+	vf.RelativeTo = Enum.ActuatorRelativeTo.World
+	vf.Force = Vector3.new(0,0,0)
+	vf.Parent = rootPart
+
+	lastMass = nil
+end
+
+local function destroyVectorForce()
+	if vf then pcall(function() vf:Destroy() end) end
+	if vfAttachment then pcall(function() vfAttachment:Destroy() end) end
+	vf = nil
+	vfAttachment = nil
+	lastMass = nil
+end
+
+local function setBoosterEnabled(state)
+	boosterEnabled = state
+	if boosterEnabled then
+		local char = player.Character
+		if char and char:FindFirstChild("HumanoidRootPart") then
+			createVectorForce(char.HumanoidRootPart)
+		end
+	else
+		destroyVectorForce()
+	end
+	refreshGravityLabels()
+end
+
+-- UI events
+btnGravPlus.MouseButton1Click:Connect(function()
+	currentGravity = math.clamp(currentGravity + gravityStep, gravityMin, gravityMax)
+	if gravityApplied then applyGravity(currentGravity) end
+	refreshGravityLabels()
+end)
+btnGravMinus.MouseButton1Click:Connect(function()
+	currentGravity = math.clamp(currentGravity - gravityStep, gravityMin, gravityMax)
+	if gravityApplied then applyGravity(currentGravity) end
+	refreshGravityLabels()
+end)
+gravBox.FocusLost:Connect(function()
+	local v = tonumber(gravBox.Text)
+	if v then currentGravity = math.clamp(v, gravityMin, gravityMax) else gravBox.Text = tostring(currentGravity) end
+	if gravityApplied then applyGravity(currentGravity) end
+	refreshGravityLabels()
+end)
+gravToggle.MouseButton1Click:Connect(function()
+	gravityApplied = not gravityApplied
+	if gravityApplied then applyGravity(currentGravity) else restoreOriginalGravity() end
+	refreshGravityLabels()
 end)
 
--- end of script
+btnBoostPlus.MouseButton1Click:Connect(function()
+	currentBooster = math.clamp(currentBooster + boosterStep, boosterMin, boosterMax)
+	refreshGravityLabels()
+end)
+btnBoostMinus.MouseButton1Click:Connect(function()
+	currentBooster = math.clamp(currentBooster - boosterStep, boosterMin, boosterMax)
+	refreshGravityLabels()
+end)
+boostBox.FocusLost:Connect(function()
+	local v = tonumber(boostBox.Text)
+	if v then currentBooster = math.clamp(v, boosterMin, boosterMax) else boostBox.Text = tostring(currentBooster) end
+	refreshGravityLabels()
+end)
+boostToggle.MouseButton1Click:Connect(function()
+	setBoosterEnabled(not boosterEnabled)
+end)
+
+-- Per-letter async tween for gravity title
+for i, lbl in ipairs(letterLabels) do
+	spawn(function()
+		while gravityScreenGui.Parent do
+			local toBlueDur = 0.4 + math.random() * 1.0 + (i % 3) * 0.03
+			local t1 = TweenInfo.new(toBlueDur, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			local tw1 = TweenService:Create(lbl, t1, {TextColor3 = Color3.fromRGB(34,111,255)})
+			tw1:Play()
+			tw1.Completed:Wait()
+			wait(0.02 + math.random() * 0.12)
+			local toOrangeDur = 0.35 + math.random() * 0.9 + ((#letterLabels - i) % 4) * 0.03
+			local t2 = TweenInfo.new(toOrangeDur, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			local tw2 = TweenService:Create(lbl, t2, {TextColor3 = Color3.fromRGB(255,140,34)})
+			tw2:Play()
+			tw2.Completed:Wait()
+			wait(0.04 + math.random() * 0.18)
+		end
+	end)
+end
+
+-- Stroke tween loop (frame)
+do
+	local info = TweenInfo.new(0.9, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1, true)
+	local goal = {Color = Color3.fromRGB(255,140,34)}
+	local tw = TweenService:Create(stroke, info, goal)
+	tw:Play()
+end
+
+-- Heartbeat: update VectorForce each frame
+RunService.Heartbeat:Connect(function(dt)
+	if boosterEnabled and vf and vfAttachment and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+		local rroot = player.Character.HumanoidRootPart
+		local ok, mass = pcall(function() return rroot:GetMass() end)
+		if ok and mass and mass > 0 then lastMass = mass end
+		local massNow = lastMass or 1
+		local a = math.clamp(currentBooster, boosterMin, boosterMax)
+		local totalUp = massNow * (Workspace.Gravity + a)
+		if totalUp < 0 then totalUp = 0 end
+		vf.Force = Vector3.new(0, totalUp, 0)
+		if vfAttachment.Parent ~= rroot then vfAttachment.Parent = rroot end
+	end
+end)
+
+player.CharacterAdded:Connect(function(char)
+	if boosterEnabled then
+		local hrp = char:WaitForChild("HumanoidRootPart", 5)
+		if hrp then createVectorForce(hrp) end
+	end
+end)
+
+-- initial labels
+refreshGravityLabels()
+
+-- JumpUI toggle behavior:
+-- btnJumpUI toggles gravityScreenGui visibility and enables/disables gravity/booster functions.
+-- It saves previous states so enabling will restore them.
+local savedGravityApplied = gravityApplied
+local savedBoosterEnabled = boosterEnabled
+local jumpUiActive = false
+
+btnJumpUI.MouseButton1Click:Connect(function()
+	jumpUiActive = not jumpUiActive
+	if jumpUiActive then
+		-- open gravity GUI and restore saved states
+		gravityScreenGui.Enabled = true
+		gravityFrame.Visible = true
+		-- restore previous saved states
+		gravityApplied = savedGravityApplied or gravityApplied
+		if gravityApplied then applyGravity(currentGravity) end
+		boosterEnabled = savedBoosterEnabled or boosterEnabled
+		if boosterEnabled then
+			setBoosterEnabled(true)
+		else
+			-- ensure UI reflects current state
+			refreshGravityLabels()
+		end
+		btnJumpUI.Text = "JumpUI: ON"
+	else
+		-- hide gravity UI and save states, then disable gravity/booster and restore original gravity
+		savedGravityApplied = gravityApplied
+		savedBoosterEnabled = boosterEnabled
+		gravityScreenGui.Enabled = false
+		-- disable gravity override and booster
+		gravityApplied = false
+		restoreOriginalGravity()
+		if boosterEnabled then setBoosterEnabled(false) end
+		btnJumpUI.Text = "JumpUI: OFF"
+	end
+	-- refresh labels to reflect current state
+	refreshGravityLabels()
+end)
+
+-- Cleanup on script destroy
+script.Destroying:Connect(function()
+	-- restore gravity
+	if originalGravity then Workspace.Gravity = originalGravity end
+	-- destroy VF
+	destroyVectorForce()
+	-- destroy GUIs and fly parts
+	flyCleanup()
+	if gravityScreenGui and gravityScreenGui.Parent then gravityScreenGui:Destroy() end
+end)
+
+-- Init visibility states
+gravityScreenGui.Enabled = false
+btnJumpUI.Text = "JumpUI: OFF"
+
+-- End of combined LocalScript
 
