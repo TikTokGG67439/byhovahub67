@@ -29,9 +29,9 @@ local flySpeed = 29
 
 -- FLOAT params (separate from fly)
 local floatEnabled = false
-local floatForwardSpeed = 111
+local floatForwardSpeed = 200
 local floatFallMultiplier = 8
-local floatVerticalSmooth = 11
+local floatVerticalSmooth = 9
 local floatMaxStepPerFrame = 12
 
 local smoothing = 0.12
