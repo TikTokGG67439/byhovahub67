@@ -1,1159 +1,583 @@
+-- LocalScript (StarterPlayerScripts)
+-- Strafe+Ring v3 — исправленный/устойчивый вариант (AlignPosition + spring helper, без BodyVelocity и Lerp).
+-- Внимательно: этот скрипт — полный файл, заменяй полностью.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local UIS = game:GetService("UserInputService")
-local Workspace = game:GetService("Workspace")
-local TweenService = game:GetService("TweenService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer = Players.LocalPlayer
+local PlayerId = LocalPlayer and LocalPlayer.UserId or 0
 
-local player = Players.LocalPlayer
-if not player then return end
+-- ====== ПАРАМЕТРЫ ======
+local SEARCH_RADIUS = 15
+local SEGMENTS = 64
+local RING_RADIUS = 2.6
+local SEGMENT_HEIGHT = 0.14
+local SEGMENT_THICK = 0.45
+local RING_HEIGHT_BASE = -1.5
+local RING_COLOR = Color3.fromRGB(255, 0, 170)
+local RING_TRANSP = 0.22
 
--- WAIT FOR CHARACTER
-local function waitForCharacter()
-	local c = player.Character or player.CharacterAdded:Wait()
-	local h = c:WaitForChild("Humanoid")
-	local r = c:WaitForChild("HumanoidRootPart")
-	return c, h, r
+-- bob (визуальные волны / левитация)
+local BOB_AMPLITUDE = 0.28
+local BOB_SPEED1 = 2.0
+local BOB_SPEED2 = 0.6
+local BOB_NOISE_FREQ = 0.9
+local LEVITATE_AMPLITUDE = 0.22
+local LEVITATE_FREQ = 1.0
+
+-- STRAFE
+local ORBIT_RADIUS_DEFAULT = 4
+local ORBIT_SPEED_BASE = 3.4
+local ALIGN_MAX_FORCE = 5e4
+local ALIGN_MIN_FORCE = 500
+local ALIGN_RESPONSIVENESS = 18
+
+-- helper (spring-based movement instead of Lerp)
+local HELPER_SPRING = 90      -- stiffness
+local HELPER_DAMP = 14        -- damping
+local HELPER_MAX_SPEED = 60   -- limit helper speed (studs/sec)
+
+-- randomization / bursts
+local ORBIT_NOISE_FREQ = 0.45
+local ORBIT_NOISE_AMP = 0.9
+local ORBIT_BURST_CHANCE_PER_SEC = 0.6
+local ORBIT_BURST_MIN = 1.2
+local ORBIT_BURST_MAX = 3.2
+local DRIFT_FREQ = 0.12
+local DRIFT_AMP = 0.45
+
+-- UI placement
+local UI_POS = UDim2.new(0.5, -170, 0.85, -44)
+
+-- ====== УТИЛИТЫ ======
+local function getHRP(player)
+    local ch = player and player.Character
+    if not ch then return nil end
+    return ch:FindFirstChild("HumanoidRootPart")
 end
 
-local character, humanoid, root = waitForCharacter()
-
-----------------------------------------------------------------
--- SMOOTH FLY V3 (UI + movement) - kept intact, UI compact edition
-----------------------------------------------------------------
--- CONFIG
-local flyEnabled = false
-local vertControl = 0 -- -1 down, 0 none, 1 up
-local flySpeed = 29
-
--- FLOAT params (separate from fly)
-local floatEnabled = false
-local floatForwardSpeed = 200
-local floatFallMultiplier = 8
-local floatVerticalSmooth = 9
-local floatMaxStepPerFrame = 12
-
-local smoothing = 0.12
-local acceleration = 8
-local maxStepPerFrame = 6
-
-local useCameraPitchForTp = true
-local toggleKey = Enum.KeyCode.F
-local tpKey = Enum.KeyCode.T
-local floatKey = Enum.KeyCode.G
-
-local tpDistance = 6
-local tpStep = 1
-local tpMin, tpMax = 1, 100
-local tpCooldown = 0.6
-local lastTpTime = 0
-local tpLerpFactor = 0.35
-
-local platformEnabled = false
-local platformPart = nil
-local platformOffset = 3
-local platformLerp = 0.12
-local platformSize = Vector3.new(5.5, 0.5, 5.5)
-local platformColor = Color3.fromRGB(120, 120, 120)
-local PLATFORM_EVENT_NAME = "FlyPlatformPing"
-
--- FLY GUI (namespaced to avoid collisions)
-local flyScreenGui = Instance.new("ScreenGui")
-flyScreenGui.Name = "FlyGUI_v3_compact"
-flyScreenGui.ResetOnSpawn = false
-flyScreenGui.Parent = player:WaitForChild("PlayerGui")
-
--- helper: button creator (TextScaled true, Arcade font)
-local function makeBtn(parent, x, y, w, h, text)
-	local b = Instance.new("TextButton")
-	b.Size = UDim2.new(0, w, 0, h)
-	b.Position = UDim2.new(0, x, 0, y)
-	b.Text = text
-	b.Font = Enum.Font.Arcade
-	b.TextSize = 14
-	b.TextScaled = true
-	b.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
-	b.TextColor3 = Color3.new(1, 1, 1)
-	b.AutoButtonColor = true
-	b.Parent = parent
-	local corner = Instance.new("UICorner", b)
-	corner.CornerRadius = UDim.new(0, 8)
-	return b
+local function safeDestroy(obj)
+    if obj and obj.Parent then
+        pcall(function() obj:Destroy() end)
+    end
 end
 
--- Main compact frame
-local function makeMainFrame()
-	local frame = Instance.new("Frame")
-	frame.Name = "FlyMainFrame"
-	frame.Size = UDim2.new(0, 330, 0, 330) -- exact
-	frame.Position = UDim2.new(0, 376, 0, 120)
-	frame.BackgroundTransparency = 0.05
-	frame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-	frame.Parent = flyScreenGui
-	local corner = Instance.new("UICorner", frame)
-	corner.CornerRadius = UDim.new(0, 12)
-
-	local imagebutton = Instance.new("ImageButton")
-	imagebutton.Image = "rbxassetid://106730820213474"
-	imagebutton.Position = UDim2.new(0.476, 0,0.400, 0)
-	imagebutton.Size = UDim2.new(0, 70, 0, 70)
-	imagebutton.Active = true
-	imagebutton.Draggable = true
-	imagebutton.Parent = flyScreenGui
-	local uistoke = Instance.new("UICorner", imagebutton)
-	uistoke.CornerRadius = UDim.new(0, 10)
-	local uistokeke = Instance.new("UIStroke", imagebutton)
-	uistokeke.Thickness = 2
-	uistokeke.Color = Color3.fromRGB(167, 94, 30)
-	imagebutton.MouseButton1Click:Connect(function()
-		frame.Visible = not frame.Visible
-	end)
-
-	local stroke = Instance.new("UIStroke", frame)
-	stroke.Thickness = 2
-	stroke.Color = Color3.fromRGB(34, 111, 255) -- initial blue
-
-	local header = Instance.new("Frame")
-	header.Name = "Header"
-	header.Size = UDim2.new(1, 0, 0, 72)
-	header.Position = UDim2.new(0, 0, 0, 0)
-	header.BackgroundTransparency = 1
-	header.Parent = frame
-
-	return frame, stroke, header
+local function charToKeyCode(str)
+    if not str or #str == 0 then return nil end
+    local s = tostring(str):upper()
+    if #s == 1 then
+        local ok, key = pcall(function() return Enum.KeyCode[s] end)
+        if ok and key then return key end
+    end
+    return nil
 end
 
-local mainFrame, mainStroke, mainHeader = makeMainFrame()
+local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 
--- stroke tween blue <-> orange
-do
-	local info = TweenInfo.new(1.1, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1, true)
-	local goal = {Color = Color3.fromRGB(255, 140, 34)}
-	local tw = TweenService:Create(mainStroke, info, goal)
-	tw:Play()
+-- ====== UI (создание + перетаскивание) ======
+local playerGui = LocalPlayer:WaitForChild("PlayerGui")
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "StrafeRingUI_v3_"..tostring(PlayerId)
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
+
+local frame = Instance.new("Frame", screenGui)
+frame.Size = UDim2.new(0, 340, 0, 100)
+frame.Position = UI_POS
+frame.BackgroundTransparency = 0.45
+frame.Name = "Frame"
+
+local title = Instance.new("TextLabel", frame)
+title.Size = UDim2.new(1, -12, 0, 22)
+title.Position = UDim2.new(0, 6, 0, 4)
+title.BackgroundTransparency = 1
+title.Text = "Strafe + Ring (v3)"
+title.Font = Enum.Font.SourceSansBold
+title.TextSize = 18
+title.Name = "Title"
+
+local toggleBtn = Instance.new("TextButton", frame)
+toggleBtn.Size = UDim2.new(0.33, -8, 0, 34)
+toggleBtn.Position = UDim2.new(0, 6, 0, 30)
+toggleBtn.Text = "OFF"
+toggleBtn.Font = Enum.Font.SourceSans
+toggleBtn.TextSize = 16
+
+local changeTargetBtn = Instance.new("TextButton", frame)
+changeTargetBtn.Size = UDim2.new(0.33, -8, 0, 34)
+changeTargetBtn.Position = UDim2.new(0.34, 2, 0, 30)
+changeTargetBtn.Text = "Change Target"
+changeTargetBtn.Font = Enum.Font.SourceSans
+changeTargetBtn.TextSize = 14
+
+local hotkeyBox = Instance.new("TextBox", frame)
+hotkeyBox.Size = UDim2.new(0.34, -8, 0, 34)
+hotkeyBox.Position = UDim2.new(0.68, 2, 0, 30)
+hotkeyBox.Text = "Hotkey: F"
+hotkeyBox.ClearTextOnFocus = false
+hotkeyBox.Font = Enum.Font.SourceSans
+hotkeyBox.TextSize = 14
+
+local infoLabel = Instance.new("TextLabel", frame)
+infoLabel.Size = UDim2.new(1, -12, 0, 28)
+infoLabel.Position = UDim2.new(0, 6, 0, 66)
+infoLabel.BackgroundTransparency = 1
+infoLabel.Text = "Nearest: — | Dist: — | Dir: CW | R: "..tostring(ORBIT_RADIUS_DEFAULT)
+infoLabel.TextSize = 14
+infoLabel.Font = Enum.Font.SourceSans
+
+-- draggable frame implementation
+local dragging = false
+local dragInput = nil
+local dragStart = nil
+local startPos = nil
+
+local function updateDrag(input)
+    if not dragging then return end
+    local delta = input.Position - dragStart
+    frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
 end
 
--- draggable header
-do
-	local dragging = false
-	local dragStart, startPos
-	mainHeader.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			dragStart = input.Position
-			startPos = mainFrame.Position
-			input.Changed:Connect(function()
-				if input.UserInputState == Enum.UserInputState.End then dragging = false end
-			end)
-		end
-	end)
-	mainHeader.InputChanged:Connect(function(input)
-		if (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement)
-			and dragging and dragStart and startPos then
-			local delta = input.Position - dragStart
-			mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-		end
-	end)
-end
-
--- Animated per-letter NovaHub title (TextScaled = true, Arcade)
-local function makeAnimatedTitle(parent, text)
-	local root = Instance.new("Frame")
-	root.Size = UDim2.new(1, -12, 0, 52)
-	root.Position = UDim2.new(0, 6, 0, 6)
-	root.BackgroundTransparency = 1
-	root.Parent = parent
-
-	local list = Instance.new("UIListLayout", root)
-	list.FillDirection = Enum.FillDirection.Horizontal
-	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
-	list.VerticalAlignment = Enum.VerticalAlignment.Center
-	list.SortOrder = Enum.SortOrder.LayoutOrder
-	list.Padding = UDim.new(0, 0)
-
-	local chars = {}
-	for i = 1, #text do
-		local ch = text:sub(i,i)
-		local lbl = Instance.new("TextLabel")
-		lbl.Size = UDim2.new(0, 28, 1, 0)
-		lbl.BackgroundTransparency = 1
-		lbl.Font = Enum.Font.Arcade
-		lbl.Text = ch
-		lbl.TextSize = 28
-		lbl.TextScaled = true
-		lbl.TextColor3 = Color3.fromRGB(34,111,255)
-		lbl.Parent = root
-
-		-- slight outline for clarity
-		local stroke = Instance.new("UIStroke", lbl)
-		stroke.Thickness = 1
-		stroke.Color = Color3.fromRGB(0,0,0)
-		stroke.Transparency = 0.65
-
-		table.insert(chars, lbl)
-	end
-
-	local subtitle = Instance.new("TextLabel")
-	subtitle.BackgroundTransparency = 1
-	subtitle.Size = UDim2.new(1, -12, 0, 18)
-	subtitle.Position = UDim2.new(0, 6, 0, 36)
-	subtitle.Font = Enum.Font.Arcade
-	subtitle.TextScaled = true
-	subtitle.Text = "tt: @novahub67"
-	subtitle.TextSize = 14
-	subtitle.TextColor3 = Color3.fromRGB(200,200,200)
-	subtitle.TextXAlignment = Enum.TextXAlignment.Center
-	subtitle.Parent = parent
-
-	-- animate letters asynchronously: staggered delays and slightly different durations
-	for i, lbl in ipairs(chars) do
-		spawn(function()
-			-- stagger so neighboring letters are out of phase
-			local baseDelay = (i % 2 == 0) and 0.02 or 0.08
-			wait(baseDelay + math.random() * 0.06)
-			local dur = 0.9 + (math.random() * 0.6)
-			local info = TweenInfo.new(dur, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
-			local goal = {TextColor3 = Color3.fromRGB(255,140,34)}
-			local tw = TweenService:Create(lbl, info, goal)
-			tw:Play()
-		end)
-	end
-
-	return root, subtitle
-end
-
-makeAnimatedTitle(mainHeader, "NovaHub")
-
--- ===========================
--- Buttons / compact layout
--- ===========================
--- Top-left primary toggles
-local btnToggle = makeBtn(mainFrame, 8, 86, 120, 36, "Fly: OFF")
-local btnFloat = makeBtn(mainFrame, 8, 132, 120, 36, "Float: OFF")
-local btnPlatform = makeBtn(mainFrame, 8, 178, 120, 30, "Platform: OFF")
-local btnTp = makeBtn(mainFrame, 8, 218, 120, 26, "Tp")
-
--- NEW: JumpUI master toggle (in Fly mainFrame)
-local btnJumpUI = makeBtn(mainFrame, 8, 260, 120, 30, "JumpUI: OFF")
-
--- Fly speed display & adjust
-local flySpeedDec = makeBtn(mainFrame, 136, 86, 28, 26, "−")
-local flySpeedLbl = Instance.new("TextLabel", mainFrame)
-flySpeedLbl.Size = UDim2.new(0, 120, 0, 26)
-flySpeedLbl.Position = UDim2.new(0, 168, 0, 86)
-flySpeedLbl.BackgroundTransparency = 1
-flySpeedLbl.Font = Enum.Font.Arcade
-flySpeedLbl.TextScaled = true
-flySpeedLbl.Text = "Fly: " .. tostring(math.floor(flySpeed))
-flySpeedLbl.TextXAlignment = Enum.TextXAlignment.Left
-flySpeedLbl.TextColor3 = Color3.fromRGB(230,230,230)
-local flySpeedInc = makeBtn(mainFrame, 272, 86, 28, 26, "+")
-
--- FLOAT controls
-local floatSpeedDec = makeBtn(mainFrame, 136, 132, 28, 30, "−")
-local floatSpeedLbl = Instance.new("TextLabel", mainFrame)
-floatSpeedLbl.Size = UDim2.new(0, 132, 0, 30)
-floatSpeedLbl.Position = UDim2.new(0, 168, 0, 132)
-floatSpeedLbl.BackgroundTransparency = 1
-floatSpeedLbl.Font = Enum.Font.Arcade
-floatSpeedLbl.TextScaled = true
-floatSpeedLbl.Text = "Float Speed: " .. tostring(math.floor(floatForwardSpeed))
-floatSpeedLbl.TextXAlignment = Enum.TextXAlignment.Left
-floatSpeedLbl.TextColor3 = Color3.fromRGB(230,230,230)
-local floatSpeedInc = makeBtn(mainFrame, 272, 132, 28, 30, "+")
-
-local floatSmoothDec = makeBtn(mainFrame, 136, 168, 28, 30, "−")
-local floatSmoothLbl = Instance.new("TextLabel", mainFrame)
-floatSmoothLbl.Size = UDim2.new(0, 132, 0, 30)
-floatSmoothLbl.Position = UDim2.new(0, 168, 0, 168)
-floatSmoothLbl.BackgroundTransparency = 1
-floatSmoothLbl.Font = Enum.Font.Arcade
-floatSmoothLbl.TextScaled = true
-floatSmoothLbl.Text = "Float Smooth: " .. tostring(math.floor(floatVerticalSmooth))
-floatSmoothLbl.TextXAlignment = Enum.TextXAlignment.Left
-floatSmoothLbl.TextColor3 = Color3.fromRGB(230,230,230)
-local floatSmoothInc = makeBtn(mainFrame, 272, 168, 28, 30, "+")
-
-local fallDec = makeBtn(mainFrame, 136, 204, 28, 22, "−")
-local fallLbl = Instance.new("TextLabel", mainFrame)
-fallLbl.Size = UDim2.new(0, 160, 0, 22)
-fallLbl.Position = UDim2.new(0, 168, 0, 204)
-fallLbl.BackgroundTransparency = 1
-fallLbl.Font = Enum.Font.Arcade
-fallLbl.TextScaled = true
-fallLbl.Text = "Float Fall: " .. string.format("%.2f", floatFallMultiplier)
-fallLbl.TextXAlignment = Enum.TextXAlignment.Left
-fallLbl.TextColor3 = Color3.fromRGB(200,200,200)
-local fallInc = makeBtn(mainFrame, 272, 204, 28, 22, "+")
-
--- ===========================
--- Align-based fly objects (unchanged)
--- ===========================
-local targetPart
-local attachRoot
-local attachTarget
-local alignPos
-local alignOri
-
-local function cleanFlyObjects()
-	if targetPart and targetPart.Parent then targetPart:Destroy() end
-	if attachRoot and attachRoot.Parent then attachRoot:Destroy() end
-	if attachTarget and attachTarget.Parent then attachTarget:Destroy() end
-	if alignPos and alignPos.Parent then alignPos:Destroy() end
-	if alignOri and alignOri.Parent then alignOri:Destroy() end
-	targetPart, attachRoot, attachTarget, alignPos, alignOri = nil, nil, nil, nil, nil
-end
-
-local function createFlyObjects(r)
-	cleanFlyObjects()
-	targetPart = Instance.new("Part")
-	targetPart.Name = "Fly_TargetPart"
-	targetPart.Size = Vector3.new(1,1,1)
-	targetPart.Transparency = 1
-	targetPart.CanCollide = false
-	targetPart.Anchored = true
-	targetPart.CFrame = r.CFrame
-	targetPart.Parent = Workspace
-
-	attachRoot = Instance.new("Attachment")
-	attachRoot.Name = "Fly_AttachRoot"
-	attachRoot.Parent = r
-
-	attachTarget = Instance.new("Attachment")
-	attachTarget.Name = "Fly_AttachTarget"
-	attachTarget.Parent = targetPart
-
-	alignPos = Instance.new("AlignPosition")
-	alignPos.Attachment0 = attachRoot
-	alignPos.Attachment1 = attachTarget
-	alignPos.RigidityEnabled = false
-	alignPos.MaxForce = 1e6
-	alignPos.Responsiveness = 18
-	alignPos.MaxVelocity = math.huge
-	alignPos.Parent = r
-
-	alignOri = Instance.new("AlignOrientation")
-	alignOri.Attachment0 = attachRoot
-	alignOri.Attachment1 = attachTarget
-	alignOri.RigidityEnabled = false
-	alignOri.MaxTorque = 1e6
-	alignOri.Responsiveness = 16
-	alignOri.Parent = r
-
-	alignPos.Enabled = false
-	alignOri.Enabled = false
-end
-
-createFlyObjects(root)
-
-local targetVelocity = Vector3.new(0,0,0)
-local floatVelocity = Vector3.new(0,0,0)
-local tpTargetPos = nil
-local isTpActive = false
-
--- platform helpers
-local function createPlatformPart()
-	if platformPart and platformPart.Parent then return end
-	platformPart = Instance.new("Part")
-	platformPart.Name = "Fly_Platform"
-	platformPart.Size = platformSize
-	platformPart.Anchored = true
-	platformPart.CanCollide = true
-	platformPart.Transparency = 0
-	platformPart.Color = platformColor
-	platformPart.TopSurface = Enum.SurfaceType.Smooth
-	platformPart.BottomSurface = Enum.SurfaceType.Smooth
-	platformPart.Parent = Workspace
-	platformPart:SetAttribute("IsFlyPlatform", true)
-	for i = 1, 4 do
-		local a = Instance.new("Attachment", platformPart)
-		a.Name = "FlyPlatform_Attach" .. tostring(i)
-		a.Position = Vector3.new((i-2.5)*0.6, 0, 0)
-	end
-	platformPart.Touched:Connect(function(other)
-		if not character or not root then return end
-		if other:IsDescendantOf(character) then
-			pcall(function() platformPart:SetAttribute("LastTouchedBy", player.UserId) end)
-			local evt = ReplicatedStorage:FindFirstChild(PLATFORM_EVENT_NAME)
-			if evt and evt:IsA("RemoteEvent") then pcall(function() evt:FireServer(true) end) end
-		end
-	end)
-end
-
-local function destroyPlatformPart()
-	if platformPart and platformPart.Parent then platformPart:Destroy() end
-	platformPart = nil
-end
-
-local function setPlatformEnabled(enable)
-	platformEnabled = enable
-	btnPlatform.Text = platformEnabled and "Platform: ON" or "Platform: OFF"
-	if platformEnabled then
-		createPlatformPart()
-		if platformPart and root then platformPart.CFrame = CFrame.new(root.Position - Vector3.new(0, platformOffset, 0)) end
-	else
-		destroyPlatformPart()
-	end
-end
-setPlatformEnabled(false)
-
--- ===========================
--- Enable/disable fly & float (hooked to UI)
--- ===========================
-local function enableFly(enable)
-	flyEnabled = enable
-	btnToggle.Text = flyEnabled and "Fly: ON" or "Fly: OFF"
-	if flyEnabled then
-		if floatEnabled then
-			floatEnabled = false
-			btnFloat.Text = "Float: OFF"
-		end
-		if targetPart and root then
-			targetPart.CFrame = root.CFrame
-			targetVelocity = Vector3.new(0,0,0)
-			if alignPos then
-				alignPos.Enabled = true
-				alignOri.Enabled = true
-				alignPos.MaxForce = 1e6
-				alignPos.Responsiveness = 18
-				alignPos.MaxVelocity = math.huge
-				alignOri.Responsiveness = 16
-			end
-		end
-	else
-		if alignPos then
-			alignPos.Enabled = false
-			alignOri.Enabled = false
-			alignPos.MaxForce = 1e6
-			alignPos.Responsiveness = 18
-			alignPos.MaxVelocity = math.huge
-			alignOri.Responsiveness = 16
-		end
-		if targetPart then targetPart.CFrame = root.CFrame end
-		targetVelocity = Vector3.new(0,0,0)
-		tpTargetPos = nil
-		isTpActive = false
-	end
-end
-
-local function enableFloat(enable)
-	floatEnabled = enable
-	btnFloat.Text = floatEnabled and "Float: ON" or "Float: OFF"
-	if floatEnabled then
-		if flyEnabled then
-			flyEnabled = false
-			btnToggle.Text = "Fly: OFF"
-		end
-		if alignPos then
-			alignPos.Enabled = true
-			alignOri.Enabled = false
-			alignPos.MaxForce = 5e5
-			alignPos.Responsiveness = math.clamp(floatVerticalSmooth, 2, 50)
-			alignPos.MaxVelocity = math.max(60, floatForwardSpeed * 2)
-		end
-		floatVelocity = Vector3.new(0,0,0)
-		if targetPart and root then targetPart.CFrame = root.CFrame end
-	else
-		if alignPos then
-			alignPos.Enabled = false
-			alignPos.MaxForce = 1e6
-			alignPos.Responsiveness = 18
-			alignPos.MaxVelocity = math.huge
-			alignOri.Enabled = false
-		end
-		floatVelocity = Vector3.new(0,0,0)
-	end
-end
-
--- UI hooking
-btnToggle.MouseButton1Click:Connect(function() enableFly(not flyEnabled) end)
-btnFloat.MouseButton1Click:Connect(function() enableFloat(not floatEnabled) end)
-btnPlatform.MouseButton1Click:Connect(function() setPlatformEnabled(not platformEnabled) end)
-
--- TP button (small)
-btnTp.MouseButton1Click:Connect(function()
-	if not flyEnabled then return end
-	local now = tick()
-	if now - lastTpTime < tpCooldown then return end
-	lastTpTime = now
-	-- re-use computeTpTarget logic
-	local cam = Workspace.CurrentCamera
-	if not cam or not root then return end
-	local look = cam.CFrame.LookVector
-	local dir = useCameraPitchForTp and look or Vector3.new(look.X,0,look.Z)
-	if dir.Magnitude == 0 then return end
-	dir = dir.Unit
-	local rayParams = RaycastParams.new()
-	rayParams.FilterDescendantsInstances = {character}
-	rayParams.FilterType = Enum.RaycastFilterType.Blacklist
-	rayParams.IgnoreWater = true
-	if platformPart then table.insert(rayParams.FilterDescendantsInstances, platformPart) end
-	if targetPart then table.insert(rayParams.FilterDescendantsInstances, targetPart) end
-
-	local origins = {}
-	if character then
-		local head = character:FindFirstChild("Head")
-		local upper = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-		if head and head.Position then table.insert(origins, head.Position) end
-		if upper and upper.Position then table.insert(origins, upper.Position) end
-	end
-	table.insert(origins, root.Position + Vector3.new(0,1.5,0))
-	table.insert(origins, root.Position + Vector3.new(0,0.5,0))
-
-	local bestFinal = nil
-	for _, origin in ipairs(origins) do
-		local cast = Workspace:Raycast(origin, dir * tpDistance, rayParams)
-		local dest = nil
-		if cast then dest = cast.Position - dir * 1.0 else dest = origin + dir * tpDistance end
-		local downOrigin = dest + Vector3.new(0,60,0)
-		local downCast = Workspace:Raycast(downOrigin, Vector3.new(0,-1,0) * 200, rayParams)
-		if downCast then
-			local bufferY = math.max(1.2, (root.Size.Y/2) + 0.5)
-			local final = Vector3.new(downCast.Position.X, downCast.Position.Y + bufferY, downCast.Position.Z)
-			if final.Y < root.Position.Y - 6 then final = Vector3.new(final.X, root.Position.Y + 2.2, final.Z) end
-			for i = 1, 6 do
-				local upCheck = Workspace:Raycast(final + Vector3.new(0,0.2,0), Vector3.new(0,1,0) * (root.Size.Y + 0.6), rayParams)
-				if upCheck then final = final - dir * 0.45 else break end
-			end
-			bestFinal = final
-			break
-		else
-			if useCameraPitchForTp then
-				if dest.Y < root.Position.Y - 6 then dest = Vector3.new(dest.X, root.Position.Y + 2.2, dest.Z) end
-				for i = 1, 6 do
-					local upCheck = Workspace:Raycast(dest + Vector3.new(0,0.2,0), Vector3.new(0,1,0) * (root.Size.Y + 0.6), rayParams)
-					if upCheck then dest = dest - dir * 0.45 else break end
-				end
-				bestFinal = dest
-			else
-				bestFinal = Vector3.new(dest.X, root.Position.Y + 2.2, dest.Z)
-			end
-		end
-	end
-
-	if bestFinal and targetPart then
-		targetPart.CFrame = CFrame.new(bestFinal)
-	end
+frame.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+        dragInput = input
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
 end)
 
--- adjust labels: Fly speed
-local function refreshFlyLabel()
-	flySpeedLbl.Text = "Fly: " .. tostring(math.floor(flySpeed))
-end
-flySpeedDec.MouseButton1Click:Connect(function() flySpeed = math.clamp(flySpeed - 1, 1, 500); refreshFlyLabel() end)
-flySpeedInc.MouseButton1Click:Connect(function() flySpeed = math.clamp(flySpeed + 1, 1, 500); refreshFlyLabel() end)
-refreshFlyLabel()
-
--- FLOAT controls
-local function refreshFloatSpeed()
-	floatSpeedLbl.Text = "Float Speed: " .. tostring(math.floor(floatForwardSpeed))
-end
-floatSpeedDec.MouseButton1Click:Connect(function()
-	floatForwardSpeed = math.clamp(floatForwardSpeed - 1, 1, 1000)
-	if alignPos then alignPos.MaxVelocity = math.max(60, floatForwardSpeed * 2) end
-	refreshFloatSpeed()
-end)
-floatSpeedInc.MouseButton1Click:Connect(function()
-	floatForwardSpeed = math.clamp(floatForwardSpeed + 3, 1, 1000)
-	if alignPos then alignPos.MaxVelocity = math.max(60, floatForwardSpeed * 2) end
-	refreshFloatSpeed()
-end)
-refreshFloatSpeed()
-
-local function refreshFloatSmooth()
-	floatSmoothLbl.Text = "Float Smooth: " .. tostring(math.floor(floatVerticalSmooth))
-	if alignPos then alignPos.Responsiveness = math.clamp(floatVerticalSmooth, 2, 50) end
-end
-floatSmoothDec.MouseButton1Click:Connect(function()
-	floatVerticalSmooth = math.clamp(floatVerticalSmooth - 1, 0.5, 500)
-	refreshFloatSmooth()
-end)
-floatSmoothInc.MouseButton1Click:Connect(function()
-	floatVerticalSmooth = math.clamp(floatVerticalSmooth + 1, 0.5, 500)
-	refreshFloatSmooth()
-end)
-refreshFloatSmooth()
-
-local function refreshFall()
-	fallLbl.Text = "Float Fall: " .. string.format("%.2f", floatFallMultiplier)
-end
-fallDec.MouseButton1Click:Connect(function()
-	floatFallMultiplier = math.clamp(floatFallMultiplier - 0.3, 0.2, 30)
-	refreshFall()
-end)
-fallInc.MouseButton1Click:Connect(function()
-	floatFallMultiplier = math.clamp(floatFallMultiplier + 0.3, 0.2, 30)
-	refreshFall()
-end)
-refreshFall()
-
--- vertical keyboard/touch control functions
-local function startVertical(v) vertControl = v end
-local function stopVertical() vertControl = 0 end
-
--- keyboard bindings (toggle fly/float + vertical control)
-UIS.InputBegan:Connect(function(inp, gp)
-	if gp then return end
-	if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
-	if inp.KeyCode == toggleKey then enableFly(not flyEnabled)
-	elseif inp.KeyCode == floatKey then enableFloat(not floatEnabled)
-	elseif inp.KeyCode == tpKey and flyEnabled then
-		btnTp.MouseButton1Click:Fire()
-	elseif flyEnabled then
-		if inp.KeyCode == Enum.KeyCode.Space then startVertical(1)
-		elseif inp.KeyCode == Enum.KeyCode.LeftShift then startVertical(-1) end
-	end
-end)
-UIS.InputEnded:Connect(function(inp)
-	if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
-	if inp.KeyCode == Enum.KeyCode.Space or inp.KeyCode == Enum.KeyCode.LeftShift then stopVertical() end
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput then
+        updateDrag(input)
+    end
 end)
 
--- character respawn handling
-local function onCharacterAdded(c)
-	character = c
-	humanoid = c:WaitForChild("Humanoid")
-	root = c:WaitForChild("HumanoidRootPart")
-	createFlyObjects(root)
-	if targetPart then targetPart.CFrame = root.CFrame end
-	if flyEnabled and alignPos then alignPos.Enabled = true; alignOri.Enabled = true end
-	if platformEnabled and platformPart then platformPart.CFrame = CFrame.new(root.Position - Vector3.new(0, platformOffset, 0)) end
-end
-player.CharacterAdded:Connect(onCharacterAdded)
+-- ====== РАНТАЙМ ======
+local enabled = false
+local currentTarget = nil
+local ringParts = {}
+local folder = nil
+-- attachments/parts/align
+local attach0, helperPart, helperAttach, alignObj = nil, nil, nil, nil
+local charHumanoid = nil
 
--- ===========================
--- MAIN LOOP: movement / float / fly logic
--- ===========================
-RunService.Heartbeat:Connect(function(dt)
-	if not root or not targetPart then return end
+-- helper physics state
+local helperVel = Vector3.new(0,0,0)
 
-	if platformPart then
-		local yDiff = (root.Position - platformPart.Position).Y
-		if math.abs(yDiff + platformOffset) < 0.9 and (root.Position - platformPart.Position).Magnitude < 6 then
-			local evt = ReplicatedStorage:FindFirstChild(PLATFORM_EVENT_NAME)
-			if evt and evt:IsA("RemoteEvent") then pcall(function() evt:FireServer(true) end) end
-		else
-			local evt = ReplicatedStorage:FindFirstChild(PLATFORM_EVENT_NAME)
-			if evt and evt:IsA("RemoteEvent") then pcall(function() evt:FireServer(false) end) end
-		end
-	end
+-- orbit state
+local orbitAngle = math.random() * math.pi * 2
+local orbitDirection = 1
+local orbitRadius = ORBIT_RADIUS_DEFAULT
+local steeringInput = 0
+local shiftHeld = false
 
-	if isTpActive and tpTargetPos then
-		local cur = targetPart.Position
-		local alpha = math.clamp(tpLerpFactor * math.max(dt * 60, 1), 0, 1)
-		local new = cur:Lerp(tpTargetPos, alpha)
-		targetPart.CFrame = CFrame.new(new)
-		if (tpTargetPos - new).Magnitude < 0.25 then isTpActive = false tpTargetPos = nil end
-	end
+-- hotkey
+local hotkeyKeyCode = Enum.KeyCode.F
+local hotkeyStr = "F"
 
-	-- FLOAT
-	if floatEnabled then
-		if alignPos then
-			alignPos.Enabled = true
-			alignOri.Enabled = false
-			alignPos.MaxForce = 5e5
-			alignPos.Responsiveness = math.clamp(floatVerticalSmooth, 2, 50)
-			alignPos.MaxVelocity = math.max(60, floatForwardSpeed * 2)
-		end
+-- burst/drift state
+local burstTimer = 0
+local burstStrength = 0
+local driftPhase = math.random() * 1000
 
-		local moveDir = humanoid and humanoid.MoveDirection or Vector3.new(0,0,0)
-		local hor = Vector3.new(moveDir.X, 0, moveDir.Z) * floatForwardSpeed
-
-		local vert
-		if vertControl ~= 0 then
-			vert = vertControl * floatForwardSpeed * 0.7
-		else
-			vert = -9.81 * (floatFallMultiplier - 1)
-		end
-
-		local desiredVel = hor + Vector3.new(0, vert, 0)
-		local lerpFactor = math.clamp(acceleration * dt, 0, 1)
-		floatVelocity = floatVelocity:Lerp(desiredVel, lerpFactor)
-
-		local desiredDelta = floatVelocity * dt
-		if desiredDelta.Magnitude > floatMaxStepPerFrame then
-			desiredDelta = desiredDelta.Unit * floatMaxStepPerFrame
-		end
-
-		local currentPos = targetPart.Position
-		local newPos = currentPos + desiredDelta
-		local lerpForTarget = math.clamp(0.06 * math.max(dt * 60, 1), 0, 1)
-		targetPart.CFrame = targetPart.CFrame:Lerp(CFrame.new(newPos), lerpForTarget)
-		return
-	end
-
-	-- if neither float nor fly: keep target on root
-	if not flyEnabled then
-		targetPart.CFrame = root.CFrame
-		targetVelocity = Vector3.new(0,0,0)
-		if platformEnabled and platformPart then
-			local desired = root.Position - Vector3.new(0, platformOffset, 0)
-			local pNew = platformPart.Position:Lerp(desired, math.clamp(platformLerp / math.max(dt, 1/60), 0, 1))
-			platformPart.CFrame = CFrame.new(pNew)
-		end
-		return
-	end
-
-	-- FLY
-	local moveDir = humanoid and humanoid.MoveDirection or Vector3.new(0,0,0)
-	local hor = Vector3.new(moveDir.X, 0, moveDir.Z) * flySpeed
-	local vert = Vector3.new(0, vertControl * flySpeed, 0)
-	local desiredVel = hor + vert
-	local lerpFactor = math.clamp(acceleration * dt, 0, 1)
-	targetVelocity = targetVelocity:Lerp(desiredVel, lerpFactor)
-
-	local desiredDelta = targetVelocity * dt
-	if desiredDelta.Magnitude > maxStepPerFrame then
-		desiredDelta = desiredDelta.Unit * maxStepPerFrame
-	end
-
-	local currentPos = targetPart.Position
-	local wantedPos = currentPos + desiredDelta
-	local anchorBack = root.Position
-	wantedPos = anchorBack:Lerp(wantedPos, 0.92)
-
-	local alpha = math.clamp(smoothing / math.max(dt, 1/60), 0, 1)
-	local newPos = currentPos:Lerp(wantedPos, alpha)
-	targetPart.CFrame = CFrame.new(newPos)
-
-	local cam = Workspace.CurrentCamera
-	if cam then
-		local look = cam.CFrame.LookVector
-		local flat = Vector3.new(look.X, 0, look.Z)
-		if flat.Magnitude > 1e-4 then
-			local dir = flat.Unit
-			local desiredCFrame = CFrame.new(newPos, newPos + dir)
-			local curCFrame = targetPart.CFrame
-			targetPart.CFrame = curCFrame:Lerp(desiredCFrame, 0.28)
-		end
-	end
-
-	if platformEnabled and platformPart then
-		local desired = newPos - Vector3.new(0, platformOffset, 0)
-		local pNew = platformPart.Position:Lerp(desired, math.clamp(platformLerp / math.max(dt, 1/60), 0, 1))
-		platformPart.CFrame = CFrame.new(pNew)
-	end
-end)
-
-local function flyCleanup()
-	if targetPart and targetPart.Parent then targetPart:Destroy() end
-	destroyPlatformPart()
-	if flyScreenGui and flyScreenGui.Parent then flyScreenGui:Destroy() end
+-- ====== RING CREATION ======
+local function ensureFolder()
+    if folder and folder.Parent then return end
+    folder = Instance.new("Folder")
+    folder.Name = "StrafeRing_"..tostring(PlayerId)
+    folder.Parent = workspace
 end
 
-----------------------------------------------------------------
--- GRAVITY + BOOSTER (VectorForce) — kept intact, namespaced
-----------------------------------------------------------------
-local gravityScreenGui = Instance.new("ScreenGui")
-gravityScreenGui.Name = "GravityBooster_GUI"
-gravityScreenGui.ResetOnSpawn = false
-gravityScreenGui.Parent = player:WaitForChild("PlayerGui")
-gravityScreenGui.Enabled = false -- hidden by default, controlled by JumpUI button
-
-local originalGravity = Workspace.Gravity
-
--- CONFIG (kept same as original)
-local defaultGravity = 10
-local gravityStep = 10
-local gravityMin, gravityMax = 0, 1000
-
-local defaultBooster = 4.5
-local boosterStep = 0.5
-local boosterMin, boosterMax = 0, 50
-
--- UI
-local gravityFrame = Instance.new("Frame")
-gravityFrame.Name = "Gravity_MainFrame"
-gravityFrame.Size = UDim2.new(0, 200, 0, 140)
-gravityFrame.Position = UDim2.new(0.5, -100, 0.08, 0)
-gravityFrame.AnchorPoint = Vector2.new(0.5, 0)
-gravityFrame.BackgroundColor3 = Color3.fromRGB(22,22,22)
-gravityFrame.Active = true
-gravityFrame.Draggable = true
-gravityFrame.Parent = gravityScreenGui
-
-local textlabb = Instance.new("TextLabel")
-textlabb.BackgroundTransparency = 1
-textlabb.TextColor3 = Color3.fromRGB(171, 63, 0)
-textlabb.Text = "TT: @novahub67"
-textlabb.Font = Enum.Font.Arcade
-textlabb.TextScaled = true
-textlabb.Parent = gravityFrame
-textlabb.Position = UDim2.new(0, -27, 0, 25)
-textlabb.Size = UDim2.new(1, -12, 0, 12)
-local UiStlextlabb = Instance.new("UIStroke", textlabb)
-UiStlextlabb.Thickness = 2
-UiStlextlabb.Color = Color3.fromRGB(0, 132, 132)
-
-local uicorner = Instance.new("UICorner", gravityFrame)
-uicorner.CornerRadius = UDim.new(0, 8)
-
-local stroke = Instance.new("UIStroke", gravityFrame)
-stroke.Thickness = 5
-stroke.Color = Color3.fromRGB(34,111,255)
-
--- Title per-letter
-local titleRoot = Instance.new("Frame", gravityFrame)
-titleRoot.Size = UDim2.new(1, -12, 0, 22)
-titleRoot.Position = UDim2.new(0, 6, 0, 6)
-titleRoot.BackgroundTransparency = 1
-
-local titleText = "By NovaHub"
-local list = Instance.new("UIListLayout", titleRoot)
-list.FillDirection = Enum.FillDirection.Horizontal
-list.HorizontalAlignment = Enum.HorizontalAlignment.Left
-list.SortOrder = Enum.SortOrder.LayoutOrder
-list.Padding = UDim.new(0, 2)
-
-local letterLabels = {}
-for i = 1, #titleText do
-	local ch = titleText:sub(i,i)
-	local lbl = Instance.new("TextLabel")
-	lbl.Size = UDim2.new(0, 12, 1, 0)
-	lbl.BackgroundTransparency = 1
-	lbl.Font = Enum.Font.Arcade
-	lbl.Text = ch
-	lbl.TextSize = 20
-	lbl.TextScaled = true
-	lbl.TextColor3 = Color3.fromRGB(255,140,34) -- start orange
-	lbl.Parent = titleRoot
-
-	local ls = Instance.new("UIStroke", lbl)
-	ls.Thickness = 1
-	ls.Color = Color3.fromRGB(0,0,0)
-	ls.Transparency = 0.65
-
-	table.insert(letterLabels, lbl)
+local function clearRing()
+    if folder then
+        for _, v in ipairs(folder:GetChildren()) do
+            safeDestroy(v)
+        end
+    end
+    ringParts = {}
 end
 
--- Gravity UI (kept structure)
-local gravLabel = Instance.new("TextLabel", gravityFrame)
-gravLabel.Size = UDim2.new(0.6, -8, 0, 22)
-gravLabel.Position = UDim2.new(0, 6, 0, 30)
-gravLabel.BackgroundTransparency = 1
-gravLabel.Font = Enum.Font.Arcade
-gravLabel.TextScaled = true
-gravLabel.TextXAlignment = Enum.TextXAlignment.Left
-gravLabel.TextColor3 = Color3.fromRGB(230,230,230)
-
-local gravBox = Instance.new("TextBox", gravityFrame)
-gravBox.Size = UDim2.new(0.4, -12, 0, 22)
-gravBox.Position = UDim2.new(0.6, 0, 0, 30)
-gravBox.BackgroundColor3 = Color3.fromRGB(30,30,30)
-gravBox.Font = Enum.Font.Arcade
-gravBox.TextScaled = true
-gravBox.Text = tostring(defaultGravity)
-gravBox.TextColor3 = Color3.new(1,1,1)
-gravBox.ClearTextOnFocus = false
-local gravBoxCorner = Instance.new("UICorner", gravBox); gravBoxCorner.CornerRadius = UDim.new(0,6)
-
-local btnGravMinus = Instance.new("TextButton", gravityFrame)
-btnGravMinus.Size = UDim2.new(0, 36, 0, 20)
-btnGravMinus.Position = UDim2.new(0, 110, 0, 56)
-btnGravMinus.Text = "−"
-btnGravMinus.TextColor3 = Color3.fromRGB(230, 230, 230)
-btnGravMinus.Font = Enum.Font.Arcade
-btnGravMinus.TextScaled = true
-btnGravMinus.BackgroundColor3 = Color3.fromRGB(28,28,28)
-local btnGravMinusCorner = Instance.new("UICorner", btnGravMinus); btnGravMinusCorner.CornerRadius = UDim.new(0,6)
-
-local btnGravPlus = Instance.new("TextButton", gravityFrame)
-btnGravPlus.Size = UDim2.new(0, 36, 0, 20)
-btnGravPlus.Position = UDim2.new(1, -10, 0, 56)
-btnGravPlus.AnchorPoint = Vector2.new(1,0)
-btnGravPlus.Text = "+"
-btnGravPlus.TextColor3 = Color3.fromRGB(230, 230, 230)
-btnGravPlus.Font = Enum.Font.Arcade
-btnGravPlus.TextScaled = true
-btnGravPlus.BackgroundColor3 = Color3.fromRGB(28,28,28)
-local btnGravPlusCorner = Instance.new("UICorner", btnGravPlus); btnGravPlusCorner.CornerRadius = UDim.new(0,6)
-
-local gravToggle = Instance.new("TextButton", gravityFrame)
-gravToggle.Size = UDim2.new(0, 100, 0, 30)
-gravToggle.Position = UDim2.new(0.5, -50, 0, 50)
-gravToggle.AnchorPoint = Vector2.new(0.5,0)
-gravToggle.Text = "Gravity: OFF"
-gravToggle.Font = Enum.Font.Arcade
-gravToggle.TextScaled = true
-gravToggle.BackgroundColor3 = Color3.fromRGB(44,44,44)
-gravToggle.TextColor3 = Color3.new(1,1,1)
-local gravToggleCorner = Instance.new("UICorner", gravToggle); gravToggleCorner.CornerRadius = UDim.new(0,6)
-
--- Booster UI
-local boostLabel = Instance.new("TextLabel", gravityFrame)
-boostLabel.Size = UDim2.new(0.5, -8, 0, 30)
-boostLabel.Position = UDim2.new(0, 6, 0, 79)
-boostLabel.BackgroundTransparency = 1
-boostLabel.Font = Enum.Font.Arcade
-boostLabel.TextScaled = true
-boostLabel.TextXAlignment = Enum.TextXAlignment.Left
-boostLabel.Text = "Booster:"
-boostLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
-
-local boostBox = Instance.new("TextBox", gravityFrame)
-boostBox.Size = UDim2.new(0.35, -1, 0, 20)
-boostBox.Position = UDim2.new(0.5, 20, 0, 84)
-boostBox.BackgroundColor3 = Color3.fromRGB(30,30,30)
-boostBox.Font = Enum.Font.Arcade
-boostBox.TextScaled = true
-boostBox.Text = tostring(defaultBooster)
-boostBox.TextColor3 = Color3.fromRGB(230, 230, 230)
-boostBox.ClearTextOnFocus = false
-local boostBoxCorner = Instance.new("UICorner", boostBox); boostBoxCorner.CornerRadius = UDim.new(0,6)
-
-local btnBoostMinus = Instance.new("TextButton", gravityFrame)
-btnBoostMinus.Size = UDim2.new(0, 28, 0, 18)
-btnBoostMinus.Position = UDim2.new(0, 120, 0, 108)
-btnBoostMinus.Text = "−"
-btnBoostMinus.TextColor3 = Color3.fromRGB(230, 230, 230)
-btnBoostMinus.Font = Enum.Font.Arcade
-btnBoostMinus.TextScaled = true
-btnBoostMinus.BackgroundColor3 = Color3.fromRGB(28,28,28)
-local btnBoostMinusCorner = Instance.new("UICorner", btnBoostMinus); btnBoostMinusCorner.CornerRadius = UDim.new(0,6)
-
-local btnBoostPlus = Instance.new("TextButton", gravityFrame)
-btnBoostPlus.Size = UDim2.new(0, 28, 0, 18)
-btnBoostPlus.Position = UDim2.new(1, -14, 0, 108)
-btnBoostPlus.AnchorPoint = Vector2.new(1,0)
-btnBoostPlus.Text = "+"
-btnBoostPlus.TextColor3 = Color3.fromRGB(230, 230, 230)
-btnBoostPlus.Font = Enum.Font.Arcade
-btnBoostPlus.TextScaled = true
-btnBoostPlus.BackgroundColor3 = Color3.fromRGB(28,28,28)
-local btnBoostPlusCorner = Instance.new("UICorner", btnBoostPlus); btnBoostPlusCorner.CornerRadius = UDim.new(0,6)
-
-local boostToggle = Instance.new("TextButton", gravityFrame)
-boostToggle.Size = UDim2.new(0, 100, 0, 31)
-boostToggle.Position = UDim2.new(0.5, -50, 0, 108)
-boostToggle.AnchorPoint = Vector2.new(0.5,0)
-boostToggle.Text = "Booster: OFF"
-boostToggle.TextColor3 = Color3.fromRGB(230, 230, 230)
-boostToggle.Font = Enum.Font.Arcade
-boostToggle.TextScaled = true
-boostToggle.BackgroundColor3 = Color3.fromRGB(44,44,44)
-local boostToggleCorner = Instance.new("UICorner", boostToggle); boostToggleCorner.CornerRadius = UDim.new(0,6)
-
--- State (kept same)
-local currentGravity = math.clamp(tonumber(gravBox.Text) or defaultGravity, gravityMin, gravityMax)
-local gravityApplied = false
-
-local currentBooster = math.clamp(tonumber(boostBox.Text) or defaultBooster, boosterMin, boosterMax)
-local boosterEnabled = false
-
--- VectorForce objects
-local vf = nil
-local vfAttachment = nil
-local lastMass = nil
-
--- Helpers
-local function refreshGravityLabels()
-	gravLabel.Text = "Gravity: " .. tostring(currentGravity)
-	gravBox.Text = tostring(currentGravity)
-	gravToggle.Text = gravityApplied and ("Gravity: ON ("..tostring(currentGravity)..")") or "Gravity: OFF"
-
-	boostLabel.Text = "Booster: " .. string.format("%.2f", currentBooster)
-	boostBox.Text = tostring(currentBooster)
-	boostToggle.Text = boosterEnabled and "Booster: ON" or "Booster: OFF"
+local function createRingSegments(count)
+    clearRing()
+    ensureFolder()
+    local circumference = 2 * math.pi * RING_RADIUS
+    local segLen = (circumference / count) * 1.14
+    for i = 1, count do
+        local part = Instance.new("Part")
+        part.Size = Vector3.new(segLen, SEGMENT_HEIGHT, SEGMENT_THICK)
+        part.Anchored = true
+        part.CanCollide = false
+        part.Locked = true
+        part.Material = Enum.Material.Neon
+        part.Color = RING_COLOR
+        part.Transparency = RING_TRANSP
+        part.CastShadow = false
+        part.Name = "RingSeg"
+        part.Parent = folder
+        table.insert(ringParts, part)
+    end
 end
 
-local function applyGravity(val)
-	val = math.clamp(val, gravityMin, gravityMax)
-	Workspace.Gravity = val
+-- ====== TARGET UTIL ======
+local function playersInRadiusSorted(radius)
+    local myHRP = getHRP(LocalPlayer)
+    if not myHRP then return {} end
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            local hrp = getHRP(p)
+            if hrp then
+                local d = (hrp.Position - myHRP.Position).Magnitude
+                if d <= radius then
+                    table.insert(list, {player = p, dist = d})
+                end
+            end
+        end
+    end
+    table.sort(list, function(a,b) return a.dist < b.dist end)
+    return list
 end
 
-local function restoreOriginalGravity()
-	if originalGravity then
-		Workspace.Gravity = originalGravity
-	end
+-- ====== ALIGN (helper) ======
+local function createAlignForHRP(hrp)
+    -- очистка старых объектов (если есть)
+    if alignObj then safeDestroy(alignObj); alignObj = nil end
+    if attach0 then safeDestroy(attach0); attach0 = nil end
+    if helperAttach then safeDestroy(helperAttach); helperAttach = nil end
+    if helperPart then safeDestroy(helperPart); helperPart = nil end
+
+    -- уникальные имена чтобы не было конфликтов
+    local suffix = "_" .. tostring(PlayerId) .. "_" .. tostring(math.floor(tick()*1000))
+
+    attach0 = Instance.new("Attachment")
+    attach0.Name = "StrafeAttach0_v3" .. suffix
+    attach0.Parent = hrp
+
+    helperPart = Instance.new("Part")
+    helperPart.Name = "StrafeHelperPart_v3" .. suffix
+    helperPart.Size = Vector3.new(0.2,0.2,0.2)
+    helperPart.Transparency = 1
+    helperPart.Anchored = true             -- мы управляем позицией вручную через spring
+    helperPart.CanCollide = false
+    helperPart.CFrame = hrp.CFrame
+    helperPart.Parent = workspace
+
+    helperAttach = Instance.new("Attachment")
+    helperAttach.Name = "StrafeAttach1_v3" .. suffix
+    helperAttach.Parent = helperPart
+
+    alignObj = Instance.new("AlignPosition")
+    alignObj.Name = "StrafeAlign_v3" .. suffix
+    alignObj.Attachment0 = attach0
+    alignObj.Attachment1 = helperAttach
+    alignObj.MaxForce = ALIGN_MIN_FORCE
+    alignObj.Responsiveness = ALIGN_RESPONSIVENESS
+    alignObj.RigidityEnabled = false
+    -- если свойство MaxVelocity доступно, ограничим им скорость для стабильности
+    pcall(function() alignObj.MaxVelocity = HELPER_MAX_SPEED end)
+    alignObj.Parent = hrp
+
+    helperVel = Vector3.new(0,0,0)
 end
 
-local function createVectorForce(rootPart)
-	-- cleanup existing
-	if vf then pcall(function() vf:Destroy() end) end
-	if vfAttachment then pcall(function() vfAttachment:Destroy() end) end
-
-	vfAttachment = Instance.new("Attachment")
-	vfAttachment.Name = "NovaHub_Boost_Attachment"
-	vfAttachment.Parent = rootPart
-
-	vf = Instance.new("VectorForce")
-	vf.Name = "NovaHub_Boost_VectorForce"
-	vf.Attachment0 = vfAttachment
-	vf.RelativeTo = Enum.ActuatorRelativeTo.World
-	vf.Force = Vector3.new(0,0,0)
-	vf.Parent = rootPart
-
-	lastMass = nil
+local function destroyAlign()
+    safeDestroy(alignObj); alignObj = nil
+    safeDestroy(attach0); attach0 = nil
+    safeDestroy(helperAttach); helperAttach = nil
+    safeDestroy(helperPart); helperPart = nil
+    helperVel = Vector3.new(0,0,0)
 end
 
-local function destroyVectorForce()
-	if vf then pcall(function() vf:Destroy() end) end
-	if vfAttachment then pcall(function() vfAttachment:Destroy() end) end
-	vf = nil
-	vfAttachment = nil
-	lastMass = nil
+-- ====== setTarget / cycleTarget ======
+local function setTarget(player)
+    if currentTarget == player then return end
+    currentTarget = player
+    clearRing()
+    if player then
+        createRingSegments(SEGMENTS)
+        orbitAngle = math.random() * math.pi * 2
+        local myHRP = getHRP(LocalPlayer)
+        if myHRP and (not helperPart or not helperPart.Parent) then
+            createAlignForHRP(myHRP)
+        end
+    else
+        if alignObj then
+            alignObj.MaxForce = ALIGN_MIN_FORCE
+            alignObj.Responsiveness = math.max(4, ALIGN_RESPONSIVENESS * 0.35)
+        end
+    end
 end
 
-local function setBoosterEnabled(state)
-	boosterEnabled = state
-	if boosterEnabled then
-		local char = player.Character
-		if char and char:FindFirstChild("HumanoidRootPart") then
-			createVectorForce(char.HumanoidRootPart)
-		end
-	else
-		destroyVectorForce()
-	end
-	refreshGravityLabels()
+local function cycleTarget()
+    local list = playersInRadiusSorted(SEARCH_RADIUS)
+    if #list == 0 then setTarget(nil); return end
+    if not currentTarget then setTarget(list[1].player); return end
+    local idx = nil
+    for i,v in ipairs(list) do if v.player == currentTarget then idx = i; break end end
+    if not idx then setTarget(list[1].player); return end
+    setTarget(list[idx % #list + 1].player)
 end
 
--- UI events
-btnGravPlus.MouseButton1Click:Connect(function()
-	currentGravity = math.clamp(currentGravity + gravityStep, gravityMin, gravityMax)
-	if gravityApplied then applyGravity(currentGravity) end
-	refreshGravityLabels()
-end)
-btnGravMinus.MouseButton1Click:Connect(function()
-	currentGravity = math.clamp(currentGravity - gravityStep, gravityMin, gravityMax)
-	if gravityApplied then applyGravity(currentGravity) end
-	refreshGravityLabels()
-end)
-gravBox.FocusLost:Connect(function()
-	local v = tonumber(gravBox.Text)
-	if v then currentGravity = math.clamp(v, gravityMin, gravityMax) else gravBox.Text = tostring(currentGravity) end
-	if gravityApplied then applyGravity(currentGravity) end
-	refreshGravityLabels()
-end)
-gravToggle.MouseButton1Click:Connect(function()
-	gravityApplied = not gravityApplied
-	if gravityApplied then applyGravity(currentGravity) else restoreOriginalGravity() end
-	refreshGravityLabels()
+-- ====== UI EVENTS ======
+toggleBtn.MouseButton1Click:Connect(function()
+    enabled = not enabled
+    toggleBtn.Text = enabled and "ON" or "OFF"
+    if enabled then
+        local myHRP = getHRP(LocalPlayer)
+        if myHRP then createAlignForHRP(myHRP) end
+        infoLabel.Text = "Searching for target..."
+    else
+        setTarget(nil); destroyAlign()
+        infoLabel.Text = "Nearest: — | Dist: — | Dir: " .. (orbitDirection==1 and "CW" or "CCW") .. " | R: " .. string.format("%.2f", orbitRadius)
+    end
 end)
 
-btnBoostPlus.MouseButton1Click:Connect(function()
-	currentBooster = math.clamp(currentBooster + boosterStep, boosterMin, boosterMax)
-	refreshGravityLabels()
-end)
-btnBoostMinus.MouseButton1Click:Connect(function()
-	currentBooster = math.clamp(currentBooster - boosterStep, boosterMin, boosterMax)
-	refreshGravityLabels()
-end)
-boostBox.FocusLost:Connect(function()
-	local v = tonumber(boostBox.Text)
-	if v then currentBooster = math.clamp(v, boosterMin, boosterMax) else boostBox.Text = tostring(currentBooster) end
-	refreshGravityLabels()
-end)
-boostToggle.MouseButton1Click:Connect(function()
-	setBoosterEnabled(not boosterEnabled)
+changeTargetBtn.MouseButton1Click:Connect(cycleTarget)
+
+hotkeyBox.FocusLost:Connect(function()
+    local txt = tostring(hotkeyBox.Text or ""):gsub("^%s*(.-)%s*$","%1")
+    if #txt == 0 then hotkeyBox.Text = "Hotkey: "..(hotkeyStr or "F"); return end
+    local candidate = txt:match("^Hotkey:%s*(%S+)$") or txt
+    candidate = tostring(candidate):sub(1,1)
+    local kc = charToKeyCode(candidate)
+    if kc then hotkeyKeyCode = kc; hotkeyStr = tostring(candidate):upper(); hotkeyBox.Text = "Hotkey: "..hotkeyStr; infoLabel.Text = "Hotkey set: "..hotkeyStr
+    else hotkeyBox.Text = "Hotkey: "..(hotkeyStr or "F"); infoLabel.Text = "Invalid hotkey (use single letter/number)." end
 end)
 
--- Per-letter async tween for gravity title
-for i, lbl in ipairs(letterLabels) do
-	spawn(function()
-		while gravityScreenGui.Parent do
-			local toBlueDur = 0.4 + math.random() * 1.0 + (i % 3) * 0.03
-			local t1 = TweenInfo.new(toBlueDur, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
-			local tw1 = TweenService:Create(lbl, t1, {TextColor3 = Color3.fromRGB(34,111,255)})
-			tw1:Play()
-			tw1.Completed:Wait()
-			wait(0.02 + math.random() * 0.12)
-			local toOrangeDur = 0.35 + math.random() * 0.9 + ((#letterLabels - i) % 4) * 0.03
-			local t2 = TweenInfo.new(toOrangeDur, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
-			local tw2 = TweenService:Create(lbl, t2, {TextColor3 = Color3.fromRGB(255,140,34)})
-			tw2:Play()
-			tw2.Completed:Wait()
-			wait(0.04 + math.random() * 0.18)
-		end
-	end)
-end
+-- ====== INPUT ======
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        local kc = input.KeyCode
+        -- сначала обработаем "фиксированные" клавиши, потом hotkey
+        if kc == Enum.KeyCode.A then steeringInput = -1
+        elseif kc == Enum.KeyCode.D then steeringInput = 1
+        elseif kc == Enum.KeyCode.Z then orbitRadius = math.max(0.5, orbitRadius - 0.2)
+        elseif kc == Enum.KeyCode.X then orbitRadius = math.min(8, orbitRadius + 0.2)
+        elseif kc == Enum.KeyCode.LeftShift or kc == Enum.KeyCode.RightShift then shiftHeld = true
+        end
 
--- Stroke tween loop (frame)
-do
-	local info = TweenInfo.new(0.9, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1, true)
-	local goal = {Color = Color3.fromRGB(255,140,34)}
-	local tw = TweenService:Create(stroke, info, goal)
-	tw:Play()
-end
+        -- Toggle orbit direction on F only if F is NOT currently set as hotkey to avoid conflict.
+        if kc == Enum.KeyCode.F and hotkeyKeyCode ~= Enum.KeyCode.F then
+            orbitDirection = -orbitDirection
+        end
 
--- Heartbeat: update VectorForce each frame
-RunService.Heartbeat:Connect(function(dt)
-	if boosterEnabled and vf and vfAttachment and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-		local rroot = player.Character.HumanoidRootPart
-		local ok, mass = pcall(function() return rroot:GetMass() end)
-		if ok and mass and mass > 0 then lastMass = mass end
-		local massNow = lastMass or 1
-		local a = math.clamp(currentBooster, boosterMin, boosterMax)
-		local totalUp = massNow * (Workspace.Gravity + a)
-		if totalUp < 0 then totalUp = 0 end
-		vf.Force = Vector3.new(0, totalUp, 0)
-		if vfAttachment.Parent ~= rroot then vfAttachment.Parent = rroot end
-	end
+        -- finally, cycleTarget via configurable hotkey
+        if kc == hotkeyKeyCode then
+            cycleTarget()
+        end
+    end
 end)
 
-player.CharacterAdded:Connect(function(char)
-	if boosterEnabled then
-		local hrp = char:WaitForChild("HumanoidRootPart", 5)
-		if hrp then createVectorForce(hrp) end
-	end
+UserInputService.InputEnded:Connect(function(input, gameProcessed)
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        local kc = input.KeyCode
+        if kc == Enum.KeyCode.A or kc == Enum.KeyCode.D then steeringInput = 0
+        elseif kc == Enum.KeyCode.LeftShift or kc == Enum.KeyCode.RightShift then shiftHeld = false
+        end
+    end
 end)
 
--- initial labels
-refreshGravityLabels()
+-- ====== CHARACTER HANDLERS ======
+LocalPlayer.CharacterAdded:Connect(function(char)
+    local hrp = char:WaitForChild("HumanoidRootPart", 5)
+    if hrp then
+        charHumanoid = char:FindFirstChildOfClass("Humanoid")
+        -- при респавне заново создаём Align для текущего HRP (если включено)
+        if enabled and currentTarget then
+            -- уничтожим старое и создадим новое аккуратно
+            destroyAlign()
+            createAlignForHRP(hrp)
+        end
+    end
+end)
+LocalPlayer.CharacterRemoving:Connect(function()
+    charHumanoid = nil; destroyAlign(); clearRing(); currentTarget = nil
+end)
+Players.PlayerRemoving:Connect(function(p) if p == currentTarget then setTarget(nil) end end)
 
--- JumpUI toggle behavior:
--- btnJumpUI toggles gravityScreenGui visibility and enables/disables gravity/booster functions.
--- It saves previous states so enabling will restore them.
-local savedGravityApplied = gravityApplied
-local savedBoosterEnabled = boosterEnabled
-local jumpUiActive = false
+-- ====== MAIN LOOP ======
+local startTick = tick()
+RunService.RenderStepped:Connect(function(dt)
+    -- защита от слишком большого dt (например при минимизации)
+    if dt > 0.1 then dt = 0.1 end
 
-btnJumpUI.MouseButton1Click:Connect(function()
-	jumpUiActive = not jumpUiActive
-	if jumpUiActive then
-		-- open gravity GUI and restore saved states
-		gravityScreenGui.Enabled = true
-		gravityFrame.Visible = true
-		-- restore previous saved states
-		gravityApplied = savedGravityApplied or gravityApplied
-		if gravityApplied then applyGravity(currentGravity) end
-		boosterEnabled = savedBoosterEnabled or boosterEnabled
-		if boosterEnabled then
-			setBoosterEnabled(true)
-		else
-			-- ensure UI reflects current state
-			refreshGravityLabels()
-		end
-		btnJumpUI.Text = "JumpUI: ON"
-	else
-		-- hide gravity UI and save states, then disable gravity/booster and restore original gravity
-		savedGravityApplied = gravityApplied
-		savedBoosterEnabled = boosterEnabled
-		gravityScreenGui.Enabled = false
-		-- disable gravity override and booster
-		gravityApplied = false
-		restoreOriginalGravity()
-		if boosterEnabled then setBoosterEnabled(false) end
-		btnJumpUI.Text = "JumpUI: OFF"
-	end
-	-- refresh labels to reflect current state
-	refreshGravityLabels()
+    local now = tick()
+    local t = now - startTick
+    if not enabled then return end
+
+    local myHRP = getHRP(LocalPlayer)
+    if not myHRP then setTarget(nil); return end
+
+    -- автопоиск цели
+    if not currentTarget then
+        local list = playersInRadiusSorted(SEARCH_RADIUS)
+        if #list > 0 then setTarget(list[1].player) end
+    end
+
+    -- валидация цели
+    local targetHRP = getHRP(currentTarget)
+    if not targetHRP then
+        setTarget(nil)
+        infoLabel.Text = "Nearest: — | Dist: — | Dir: " .. (orbitDirection==1 and "CW" or "CCW") .. " | R: " .. string.format("%.2f", orbitRadius)
+    else
+        local distToMe = (targetHRP.Position - myHRP.Position).Magnitude
+        if distToMe > SEARCH_RADIUS then
+            setTarget(nil)
+            infoLabel.Text = "Nearest: — | Dist: — | Dir: " .. (orbitDirection==1 and "CW" or "CCW") .. " | R: " .. string.format("%.2f", orbitRadius)
+        else
+            infoLabel.Text = ("Nearest: %s | Dist: %.1f | Dir: %s | R: %.2f"):format(tostring(currentTarget.Name), distToMe, (orbitDirection==1 and "CW" or "CCW"), orbitRadius)
+        end
+    end
+
+    -- ==== RING: плавная левитация + bob ====
+    if currentTarget and #ringParts == 0 then createRingSegments(SEGMENTS) end
+    if currentTarget and targetHRP and #ringParts > 0 then
+        local levOffset = math.sin(t * LEVITATE_FREQ) * LEVITATE_AMPLITUDE + (math.noise(t * 0.7, PlayerId * 0.01) - 0.5) * 0.06
+        local basePos = targetHRP.Position + Vector3.new(0, RING_HEIGHT_BASE + levOffset, 0)
+        local angleStep = (2 * math.pi) / #ringParts
+        for i, part in ipairs(ringParts) do
+            if not part or not part.Parent then createRingSegments(SEGMENTS); break end
+            local angle = (i - 1) * angleStep
+
+            local radialPulse = math.sin(t * 1.35 + angle * 1.1) * 0.05
+            local r = RING_RADIUS + radialPulse + (math.noise(i * 0.03, t * 0.6) - 0.5) * 0.03
+
+            local bob =
+                math.sin(t * BOB_SPEED1 + angle * 0.8) * BOB_AMPLITUDE +
+                math.sin(t * BOB_SPEED2 + angle * 0.45) * (BOB_AMPLITUDE * 0.25) +
+                math.cos(t * BOB_NOISE_FREQ + angle * 0.3) * (BOB_AMPLITUDE * 0.08)
+
+            local x = math.cos(angle) * r
+            local z = math.sin(angle) * r
+            local pos = basePos + Vector3.new(x, bob, z)
+
+            local dirToCenter = (basePos - pos)
+            if dirToCenter.Magnitude < 0.001 then dirToCenter = Vector3.new(0,0,1) end
+            local lookAt = dirToCenter.Unit
+            local up = Vector3.new(0,1,0)
+            local right = up:Cross(lookAt)
+            if right.Magnitude < 0.001 then right = Vector3.new(1,0,0) else right = right.Unit end
+            local forward = lookAt
+            local cframe = CFrame.fromMatrix(pos, right, up, -forward)
+            cframe = cframe * CFrame.new(0, SEGMENT_HEIGHT/2, 0)
+            part.CFrame = cframe
+        end
+    else
+        clearRing()
+    end
+
+    -- ==== STRAFE helper: spring-based movement (без Lerp), шумы, всплески, дрейф ====
+    if attach0 and helperPart and alignObj and helperPart.Parent then
+        -- burst logic
+        if burstTimer > 0 then
+            burstTimer = math.max(0, burstTimer - dt)
+            if burstTimer == 0 then burstStrength = 0 end
+        else
+            if math.random() < ORBIT_BURST_CHANCE_PER_SEC * dt then
+                burstStrength = (math.random() < 0.5 and -1 or 1) * (ORBIT_BURST_MIN + math.random() * (ORBIT_BURST_MAX - ORBIT_BURST_MIN))
+                burstTimer = 0.18 + math.random() * 0.26
+            end
+        end
+
+        local noise = (math.noise(t * ORBIT_NOISE_FREQ, PlayerId * 0.01) - 0.5) * ORBIT_NOISE_AMP
+        local drift = math.sin(t * DRIFT_FREQ + driftPhase) * DRIFT_AMP
+
+        local effectiveBaseSpeed = ORBIT_SPEED_BASE * (1 + noise)
+        if shiftHeld then effectiveBaseSpeed = effectiveBaseSpeed * 1.6 end
+
+        -- дистанция и радиусная ошибка
+        local myDist = nil
+        local radialError = 0
+        if currentTarget and targetHRP then
+            myDist = (myHRP.Position - targetHRP.Position).Magnitude
+            radialError = myDist - orbitRadius
+        end
+        local speedBias = clamp(radialError * 0.45, -2.2, 2.2)
+
+        -- скорость орбиты (с учетом всплесков/управления)
+        local burstEffect = burstStrength * (burstTimer > 0 and 1 or 0)
+        orbitAngle = orbitAngle + (orbitDirection * (effectiveBaseSpeed + speedBias + burstEffect) + steeringInput * 1.8) * dt
+
+        -- радиус с боковым дрейфом
+        local desiredRadius = orbitRadius + drift * 0.6
+        if myDist and myDist < desiredRadius - 0.6 then
+            desiredRadius = desiredRadius + (desiredRadius - myDist) * 0.35
+        end
+
+        local ox = math.cos(orbitAngle) * desiredRadius
+        local oz = math.sin(orbitAngle) * desiredRadius
+        local targetPos
+        if currentTarget and targetHRP then
+            targetPos = targetHRP.Position + Vector3.new(ox, 1.2, oz)
+        else
+            targetPos = myHRP.Position + Vector3.new(0, 1.2, 0)
+        end
+
+        -- SPRING integration (замена Lerp): helperVel, helperPos
+        local curPos = helperPart.Position
+        local toTarget = (targetPos - curPos)
+        -- spring acceleration: a = k * x - c * v
+        local accel = toTarget * HELPER_SPRING - helperVel * HELPER_DAMP
+        helperVel = helperVel + accel * dt
+
+        -- clamp speed
+        if helperVel.Magnitude > HELPER_MAX_SPEED then
+            helperVel = helperVel.Unit * HELPER_MAX_SPEED
+        end
+
+        local newPos = curPos + helperVel * dt
+        -- обновляем helperPart позицию напрямую (anchored part)
+        helperPart.CFrame = CFrame.new(newPos)
+
+        -- dynamic Align force
+        local playerMoving = false
+        if charHumanoid then
+            local mv = charHumanoid.MoveDirection
+            if mv and mv.Magnitude > 0.12 then playerMoving = true end
+        end
+
+        if currentTarget and targetHRP then
+            local distToHelper = (myHRP.Position - helperPart.Position).Magnitude
+            local extraForce = clamp(distToHelper * 1200, 0, ALIGN_MAX_FORCE)
+            local desiredForce = clamp(2000 + extraForce, ALIGN_MIN_FORCE, ALIGN_MAX_FORCE)
+            if playerMoving then
+                alignObj.MaxForce = math.max(ALIGN_MIN_FORCE, desiredForce * 0.45)
+            else
+                alignObj.MaxForce = desiredForce
+            end
+            alignObj.Responsiveness = ALIGN_RESPONSIVENESS
+        else
+            -- если нет цели — ослабляем силу, чтобы персонаж двигался естественно
+            alignObj.MaxForce = ALIGN_MIN_FORCE * (playerMoving and 0.5 or 1)
+            alignObj.Responsiveness = math.max(4, ALIGN_RESPONSIVENESS * 0.35)
+        end
+
+    else
+        -- если Align потерян — попытаемся создать его для текущего myHRP (если включено)
+        if myHRP then
+            if enabled and (not attach0 or not attach0.Parent) then
+                pcall(function() createAlignForHRP(myHRP) end)
+            end
+        end
+    end
+
 end)
 
--- Cleanup on script destroy
-script.Destroying:Connect(function()
-	-- restore gravity
-	if originalGravity then Workspace.Gravity = originalGravity end
-	-- destroy VF
-	destroyVectorForce()
-	-- destroy GUIs and fly parts
-	flyCleanup()
-	if gravityScreenGui and gravityScreenGui.Parent then gravityScreenGui:Destroy() end
+-- Cleanup on UI removal
+screenGui.AncestryChanged:Connect(function(_, parent)
+    if not parent then
+        destroyAlign()
+        clearRing()
+    end
 end)
 
--- Init visibility states
-gravityScreenGui.Enabled = false
-btnJumpUI.Text = "JumpUI: OFF"
-
--- End of combined LocalScript
-
+-- initial hotkey text
+hotkeyBox.Text = "Hotkey: "..hotkeyStr
