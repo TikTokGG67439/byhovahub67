@@ -1,14 +1,12 @@
---- LocalScript (StarterPlayerScripts)
--- Strafe+Ring v3 — исправленный: Hotkey combos (Ctrl/Shift/Alt + Key), 3 modes (Smooth/Velocity/Twisted),
--- слайдеры работают на ПК и моб., физика применяется ТОЛЬКО при выбранной цели.
-
+-- LocalScript (StarterPlayerScripts)
+-- Strafe+Ring v3 — расширенный: централизованные лимиты, SearchRadius slider, PlayerESP highlight
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerId = LocalPlayer and LocalPlayer.UserId or 0
 
--- ====== ПАРАМЕТРЫ ======
+-- ====== КОНФИГ (тут меняешь всё) ======
 local SEARCH_RADIUS = 15
 local SEGMENTS = 64
 local RING_RADIUS = 2.6
@@ -18,13 +16,28 @@ local RING_HEIGHT_BASE = -1.5
 local RING_COLOR = Color3.fromRGB(255, 0, 170)
 local RING_TRANSP = 0.22
 
--- bob (визуальные волны / левитация)
-local BOB_AMPLITUDE = 0.28
-local BOB_SPEED1 = 2.0
-local BOB_SPEED2 = 0.6
-local BOB_NOISE_FREQ = 0.9
-local LEVITATE_AMPLITUDE = 0.22
-local LEVITATE_FREQ = 1.0
+-- slider и прочие лимиты (изменяй здесь)
+local SLIDER_LIMITS = {
+	-- скорость/мощность для режима velocity (BV Power)
+	BV_POWER_MIN = 50,
+	BV_POWER_MAX = 1000,      -- <-- увеличил максимум; менять здесь
+	BV_POWER_DEFAULT = 200,
+
+	-- twisted (twist)
+	TWIST_MIN = 10,
+	TWIST_MAX = 1000,         -- <-- менять здесь
+	TWIST_DEFAULT = 120,
+
+	-- force speed (реже используется — но оставил)
+	FORCE_SPEED_MIN = 10,
+	FORCE_SPEED_MAX = 10000,   -- <-- вот тут можно ставить 4000
+	FORCE_SPEED_DEFAULT = 120,
+
+	-- force power (VectorForce magnitude)
+	FORCE_POWER_MIN = 50,
+	FORCE_POWER_MAX = 8000,
+	FORCE_POWER_DEFAULT = 1200,
+}
 
 -- STRAFE baseline
 local ORBIT_RADIUS_DEFAULT = 3.2
@@ -33,10 +46,12 @@ local ALIGN_MAX_FORCE = 5e4
 local ALIGN_MIN_FORCE = 500
 local ALIGN_RESPONSIVENESS = 18
 
--- helper (spring)
+-- helper (spring) - smooth fixes
 local HELPER_SPRING = 90
 local HELPER_DAMP = 14
 local HELPER_MAX_SPEED = 60
+local HELPER_MAX_ACCEL = 4000       -- ограничение ускорения
+local HELPER_SMOOTH_INTERP = 12     -- интерполяция velocity (чем больше — тем мягче)
 
 -- randomization / bursts
 local ORBIT_NOISE_FREQ = 0.45
@@ -48,7 +63,7 @@ local DRIFT_FREQ = 0.12
 local DRIFT_AMP = 0.45
 
 -- UI placement
-local UI_POS = UDim2.new(0.5, -190, 0.82, -70)
+local UI_POS = UDim2.new(0.5, -220, 0.82, -80)
 
 -- ====== УТИЛИТЫ ======
 local function getHRP(player)
@@ -76,6 +91,7 @@ local function charToKeyCode(str)
 end
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
+local function lerp(a,b,t) return a + (b-a) * t end
 
 -- ====== UI (создание) ======
 local playerGui = LocalPlayer:WaitForChild("PlayerGui")
@@ -85,7 +101,7 @@ screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui
 
 local frame = Instance.new("Frame", screenGui)
-frame.Size = UDim2.new(0, 380, 0, 240)
+frame.Size = UDim2.new(0, 440, 0, 420) -- увеличил высоту для нового слайдера/кнопок
 frame.Position = UI_POS
 frame.BackgroundTransparency = 0.45
 frame.Name = "Frame"
@@ -96,7 +112,7 @@ local title = Instance.new("TextLabel", frame)
 title.Size = UDim2.new(1, -12, 0, 22)
 title.Position = UDim2.new(0, 6, 0, 6)
 title.BackgroundTransparency = 1
-title.Text = "Strafe + Ring (v3)"
+title.Text = "Strafe + Ring (v3) — mod"
 title.Font = Enum.Font.SourceSansBold
 title.TextSize = 18
 title.Name = "Title"
@@ -116,12 +132,21 @@ changeTargetBtn.Font = Enum.Font.SourceSans
 changeTargetBtn.TextSize = 14
 
 local hotkeyBox = Instance.new("TextBox", frame)
-hotkeyBox.Size = UDim2.new(0.34, -6, 0, 36)
+hotkeyBox.Size = UDim2.new(0.24, -6, 0, 36)
 hotkeyBox.Position = UDim2.new(0.52, 2, 0, 34)
 hotkeyBox.Text = "Hotkey: F"
 hotkeyBox.ClearTextOnFocus = false
 hotkeyBox.Font = Enum.Font.SourceSans
 hotkeyBox.TextSize = 14
+
+-- Charge hotkey box (новый)
+local chargeHotkeyBox = Instance.new("TextBox", frame)
+chargeHotkeyBox.Size = UDim2.new(0.24, -6, 0, 36)
+chargeHotkeyBox.Position = UDim2.new(0.76, 2, 0, 34)
+chargeHotkeyBox.Text = "Charge: G"
+chargeHotkeyBox.ClearTextOnFocus = false
+chargeHotkeyBox.Font = Enum.Font.SourceSans
+chargeHotkeyBox.TextSize = 14
 
 local infoLabel = Instance.new("TextLabel", frame)
 infoLabel.Size = UDim2.new(1, -12, 0, 28)
@@ -131,15 +156,23 @@ infoLabel.Text = "Nearest: — | Dist: — | Dir: CW | R: "..tostring(ORBIT_RADI
 infoLabel.TextSize = 14
 infoLabel.Font = Enum.Font.SourceSans
 
--- modes buttons
+-- ESP button
+local espBtn = Instance.new("TextButton", frame)
+espBtn.Size = UDim2.new(0.24, -6, 0, 28)
+espBtn.Position = UDim2.new(0.76, 2, 0, 106)
+espBtn.Text = "PlayerESP: OFF"
+espBtn.Font = Enum.Font.SourceSans
+espBtn.TextSize = 14
+
+-- modes buttons (расширил на 4)
 local modeContainer = Instance.new("Frame", frame)
 modeContainer.Size = UDim2.new(1, -12, 0, 36)
-modeContainer.Position = UDim2.new(0, 6, 0, 108)
+modeContainer.Position = UDim2.new(0, 6, 0, 120)
 modeContainer.BackgroundTransparency = 1
 
 local function makeModeButton(name, x)
 	local b = Instance.new("TextButton", modeContainer)
-	b.Size = UDim2.new(0.32, -6, 1, 0)
+	b.Size = UDim2.new(0.24, -6, 1, 0)
 	b.Position = UDim2.new(x, 2, 0, 0)
 	b.Text = name
 	b.Font = Enum.Font.SourceSans
@@ -149,8 +182,9 @@ local function makeModeButton(name, x)
 	return b
 end
 local btnSmooth = makeModeButton("Smooth", 0)
-local btnVelocity = makeModeButton("Velocity", 0.34)
-local btnTwisted = makeModeButton("Twisted", 0.68)
+local btnVelocity = makeModeButton("Velocity", 0.26)
+local btnTwisted = makeModeButton("Twisted", 0.52)
+local btnForce = makeModeButton("Force", 0.78)
 
 -- ====== SLIDER helper (работает с touch) ======
 local function createSlider(parent, yOffset, labelText, minVal, maxVal, initialVal, formatFn)
@@ -206,12 +240,14 @@ local function createSlider(parent, yOffset, labelText, minVal, maxVal, initialV
 	sliderBg:GetPropertyChangedSignal("AbsoluteSize"):Connect(recalc)
 	recalc()
 
+	local minV, maxV = minVal, maxVal
+
 	local function setFromX(x)
 		if sliderWidth <= 0 then return end
 		local rel = clamp(x/sliderWidth, 0, 1)
 		fill.Size = UDim2.new(rel, 0, 1, 0)
 		thumb.Position = UDim2.new(rel, 0, 0.5, -8)
-		local v = minVal + (maxVal - minVal) * rel
+		local v = minV + (maxV - minV) * rel
 		valLabel.Text = tostring(formatFn and formatFn(v) or string.format("%.2f", v))
 		return v
 	end
@@ -253,14 +289,14 @@ local function createSlider(parent, yOffset, labelText, minVal, maxVal, initialV
 	local function getValue()
 		local rel = 0
 		if sliderWidth > 0 then rel = fill.AbsoluteSize.X / sliderWidth end
-		return minVal + (maxVal - minVal) * rel
+		return minV + (maxV - minV) * rel
 	end
 
-	local function setRange(minV, maxV, initV)
-		minVal = minV; maxVal = maxV
+	local function setRange(minVv, maxVv, initV)
+		minV, maxV = minVv, maxVv
 		if initV then
 			local rel = 0
-			if maxVal ~= minVal then rel = (initV - minVal) / (maxVal - minVal) end
+			if maxV ~= minV then rel = (initV - minV) / (maxV - minV) end
 			fill.Size = UDim2.new(clamp(rel,0,1),0,1,0)
 			thumb.Position = UDim2.new(clamp(rel,0,1),0,0.5,-8)
 			valLabel.Text = tostring(formatFn and formatFn(initV) or string.format("%.2f", initV))
@@ -273,8 +309,8 @@ local function createSlider(parent, yOffset, labelText, minVal, maxVal, initialV
 		Container = container,
 		GetValue = getValue,
 		SetValue = function(v)
-			if maxVal == minVal then return end
-			local rel = (v - minVal) / (maxVal - minVal)
+			if maxV == minV then return end
+			local rel = (v - minV) / (maxV - minV)
 			fill.Size = UDim2.new(clamp(rel,0,1),0,1,0)
 			thumb.Position = UDim2.new(clamp(rel,0,1),0,0.5,-8)
 			valLabel.Text = tostring(formatFn and formatFn(v) or string.format("%.2f", v))
@@ -285,9 +321,13 @@ local function createSlider(parent, yOffset, labelText, minVal, maxVal, initialV
 	}
 end
 
--- Создаём слайдеры
-local sliderSpeed = createSlider(frame, 150, "Orbit Speed", 0.2, 6.0, ORBIT_SPEED_BASE, function(v) return string.format("%.2f", v) end)
-local sliderRadius = createSlider(frame, 190, "Orbit Radius", 0.5, 8.0, ORBIT_RADIUS_DEFAULT, function(v) return string.format("%.2f", v) end)
+-- Создаём слайдеры (добавлен sliderSearch)
+local sliderSpeed = createSlider(frame, 170, "Orbit Speed", 0.2, 6.0, ORBIT_SPEED_BASE, function(v) return string.format("%.2f", v) end)
+local sliderRadius = createSlider(frame, 220, "Orbit Radius", 0.5, 8.0, ORBIT_RADIUS_DEFAULT, function(v) return string.format("%.2f", v) end)
+local sliderForce = createSlider(frame, 270, "Force Power", SLIDER_LIMITS.FORCE_POWER_MIN, SLIDER_LIMITS.FORCE_POWER_MAX, SLIDER_LIMITS.FORCE_POWER_DEFAULT, function(v) return string.format("%.0f", v) end)
+sliderForce.Container.Visible = false -- показываем только в Force режиме
+
+local sliderSearch = createSlider(frame, 320, "Search Radius", 5, 100, SEARCH_RADIUS, function(v) return string.format("%.1f", v) end)
 
 -- ====== RUNTIME STATE ======
 local enabled = false
@@ -295,12 +335,13 @@ local currentTarget = nil
 local ringParts = {}
 local folder = nil
 
--- mode: "smooth", "velocity", "twisted"
+-- mode: "smooth", "velocity", "twisted", "force"
 local mode = "smooth"
 
 -- helper objects (created per-target)
 local attach0, helperPart, helperAttach, alignObj = nil, nil, nil, nil
 local bvObj, bgObj, lvObj = nil, nil, nil
+local vfObj, vfAttach, fallbackForceBV = nil, nil, nil
 
 local charHumanoid = nil
 local helperVel = Vector3.new(0,0,0)
@@ -312,16 +353,79 @@ local ORBIT_SPEED = ORBIT_SPEED_BASE
 local steeringInput = 0
 local shiftHeld = false
 
--- hotkey
+-- hotkey (основной) и charge hotkey (новый)
 local hotkeyKeyCode = Enum.KeyCode.F
 local hotkeyStr = "F"
 local hotkeyRequireCtrl, hotkeyRequireShift, hotkeyRequireAlt = false, false, false
 local ctrlHeld, altHeld = false, false
 
+local chargeKeyCode = Enum.KeyCode.G
+local chargeHotkeyStr = "G"
+local chargeRequireCtrl, chargeRequireShift, chargeRequireAlt = false, false, false
+
 -- bursts/drift
 local burstTimer = 0
 local burstStrength = 0
 local driftPhase = math.random() * 1000
+
+-- charge state
+local chargeTimer = 0
+local CHARGE_DURATION = 0.45
+local CHARGE_STRENGTH = 4.0 -- множитель к скорости/force при зарядке
+
+-- ESP state
+local espEnabled = false
+local playerHighlights = {} -- [player] = Highlight instance
+
+-- ====== PERSISTENCE ======
+local function saveState()
+	if LocalPlayer and LocalPlayer.SetAttribute then
+		LocalPlayer:SetAttribute("Strafe_v3_enabled", enabled)
+		LocalPlayer:SetAttribute("Strafe_v3_mode", mode)
+		LocalPlayer:SetAttribute("Strafe_v3_hotkey", hotkeyStr)
+		LocalPlayer:SetAttribute("Strafe_v3_hotkey_ctrl", hotkeyRequireCtrl)
+		LocalPlayer:SetAttribute("Strafe_v3_hotkey_shift", hotkeyRequireShift)
+		LocalPlayer:SetAttribute("Strafe_v3_hotkey_alt", hotkeyRequireAlt)
+		LocalPlayer:SetAttribute("Strafe_v3_orbitRadius", orbitRadius)
+		LocalPlayer:SetAttribute("Strafe_v3_orbitSpeed", ORBIT_SPEED)
+		LocalPlayer:SetAttribute("Strafe_v3_forcePower", sliderForce.GetValue())
+		LocalPlayer:SetAttribute("Strafe_v3_chargeHotkey", chargeHotkeyStr)
+		LocalPlayer:SetAttribute("Strafe_v3_charge_ctrl", chargeRequireCtrl)
+		LocalPlayer:SetAttribute("Strafe_v3_charge_shift", chargeRequireShift)
+		LocalPlayer:SetAttribute("Strafe_v3_charge_alt", chargeRequireAlt)
+		LocalPlayer:SetAttribute("Strafe_v3_searchRadius", sliderSearch.GetValue())
+		LocalPlayer:SetAttribute("Strafe_v3_esp", espEnabled)
+	end
+end
+
+local function loadState()
+	if LocalPlayer and LocalPlayer.GetAttribute then
+		local m = LocalPlayer:GetAttribute("Strafe_v3_mode")
+		if m and type(m)=="string" then mode = m end
+		local e = LocalPlayer:GetAttribute("Strafe_v3_enabled")
+		if e ~= nil then enabled = e end
+		local hk = LocalPlayer:GetAttribute("Strafe_v3_hotkey")
+		if hk and type(hk)=="string" then hotkeyStr = hk end
+		hotkeyRequireCtrl = LocalPlayer:GetAttribute("Strafe_v3_hotkey_ctrl") or false
+		hotkeyRequireShift = LocalPlayer:GetAttribute("Strafe_v3_hotkey_shift") or false
+		hotkeyRequireAlt = LocalPlayer:GetAttribute("Strafe_v3_hotkey_alt") or false
+		local r = LocalPlayer:GetAttribute("Strafe_v3_orbitRadius")
+		if r then orbitRadius = r; sliderRadius.SetValue(orbitRadius) end
+		local s = LocalPlayer:GetAttribute("Strafe_v3_orbitSpeed")
+		if s then ORBIT_SPEED = s; sliderSpeed.SetValue(ORBIT_SPEED) end
+		local fp = LocalPlayer:GetAttribute("Strafe_v3_forcePower")
+		if fp then sliderForce.SetValue(fp) end
+		local ch = LocalPlayer:GetAttribute("Strafe_v3_chargeHotkey")
+		if ch and type(ch)=="string" then chargeHotkeyStr = ch end
+		chargeRequireCtrl = LocalPlayer:GetAttribute("Strafe_v3_charge_ctrl") or false
+		chargeRequireShift = LocalPlayer:GetAttribute("Strafe_v3_charge_shift") or false
+		chargeRequireAlt = LocalPlayer:GetAttribute("Strafe_v3_charge_alt") or false
+		local sr = LocalPlayer:GetAttribute("Strafe_v3_searchRadius")
+		if sr then sliderSearch.SetValue(sr); SEARCH_RADIUS = tonumber(sr) end
+		local espS = LocalPlayer:GetAttribute("Strafe_v3_esp")
+		if espS ~= nil then espEnabled = espS end
+	end
+end
 
 -- ====== RING helpers ======
 local function ensureFolder()
@@ -359,9 +463,8 @@ local function createRingSegments(count)
 	end
 end
 
--- ====== MODE object creators (created only when target exists) ======
+-- ====== MODE object creators ======
 local function createSmoothObjectsFor(hrp)
-	-- create AlignPosition helper attached to HRP, helperPart is anchored in world and moved by spring
 	if alignObj or helperPart then return end
 	attach0 = Instance.new("Attachment")
 	attach0.Name = "StrafeAttach0_"..tostring(PlayerId)
@@ -402,7 +505,6 @@ local function destroySmoothObjects()
 end
 
 local function createVelocityObjectsFor(hrp)
-	-- BodyVelocity + BodyGyro on HRP (legacy but works). We'll create only on target selection.
 	if bvObj or bgObj then return end
 	local bv = Instance.new("BodyVelocity")
 	bv.Name = "Strafe_BV_"..tostring(PlayerId)
@@ -427,9 +529,7 @@ local function destroyVelocityObjects()
 end
 
 local function createLinearObjectsFor(hrp)
-	-- LinearVelocity attached to hrp (Constraint)
 	if lvObj then return end
-	-- ensure there's an attachment on hrp
 	local att = hrp:FindFirstChild("StrafeLVAttach")
 	if not att then
 		att = Instance.new("Attachment")
@@ -454,20 +554,77 @@ local function destroyLinearObjects()
 	end
 end
 
+-- Force mode: VectorForce preferred, fallback to BodyVelocity
+local function createForceObjectsFor(hrp)
+	if vfObj or fallbackForceBV then return end
+	local att = hrp:FindFirstChild("StrafeVFAttach")
+	if not att then
+		att = Instance.new("Attachment")
+		att.Name = "StrafeVFAttach"
+		att.Parent = hrp
+	end
+	vfAttach = att
+	local ok, vf = pcall(function()
+		local v = Instance.new("VectorForce")
+		v.Name = "Strafe_VectorForce_"..tostring(PlayerId)
+		v.Attachment0 = att
+		-- apply as world force
+		pcall(function() v.RelativeTo = Enum.ActuatorRelativeTo.World end)
+		v.Force = Vector3.new(0,0,0)
+		v.Parent = hrp
+		return v
+	end)
+	if ok and vf then
+		vfObj = vf
+	else
+		-- fallback
+		local ok2, bv = pcall(function()
+			local b = Instance.new("BodyVelocity")
+			b.Name = "Strafe_ForceBV_"..tostring(PlayerId)
+			b.MaxForce = Vector3.new(0,0,0)
+			b.P = 3000
+			b.Velocity = Vector3.new(0,0,0)
+			b.Parent = hrp
+			return b
+		end)
+		if ok2 and bv then fallbackForceBV = bv end
+	end
+end
+
+local function destroyForceObjects()
+	if vfObj then
+		safeDestroy(vfObj); vfObj = nil
+	end
+	if fallbackForceBV then
+		safeDestroy(fallbackForceBV); fallbackForceBV = nil
+	end
+	local hrp = getHRP(LocalPlayer)
+	if hrp then
+		local att = hrp:FindFirstChild("StrafeVFAttach")
+		if att then safeDestroy(att) end
+	end
+end
+
 local function destroyModeObjects()
 	destroySmoothObjects()
 	destroyVelocityObjects()
 	destroyLinearObjects()
+	destroyForceObjects()
 end
 
--- ====== setTarget / cycleTarget (on setting a target we create mode objects) ======
-local function setTarget(player)
-	if currentTarget == player then return end
-	-- teardown previous
+-- ====== setTarget / cycleTarget (с гарантией очистки) ======
+local function setTarget(player, forceClear)
+	-- если player == nil всегда удаляем
+	if player == nil then
+		currentTarget = nil
+		clearRing()
+		destroyModeObjects()
+		return
+	end
+	if currentTarget == player and not forceClear then return end
 	currentTarget = player
 	clearRing()
 	destroyModeObjects()
-
 	if player then
 		createRingSegments(SEGMENTS)
 		orbitAngle = math.random() * math.pi * 2
@@ -475,9 +632,11 @@ local function setTarget(player)
 		if myHRP then
 			if mode == "smooth" then createSmoothObjectsFor(myHRP)
 			elseif mode == "velocity" then createVelocityObjectsFor(myHRP)
-			elseif mode == "twisted" then createLinearObjectsFor(myHRP) end
+			elseif mode == "twisted" then createLinearObjectsFor(myHRP)
+			elseif mode == "force" then createForceObjectsFor(myHRP) end
 		end
 	end
+	saveState()
 end
 
 local function cycleTarget()
@@ -515,23 +674,34 @@ local function applyModeUI()
 	setActive(btnSmooth, mode=="smooth")
 	setActive(btnVelocity, mode=="velocity")
 	setActive(btnTwisted, mode=="twisted")
+	setActive(btnForce, mode=="force")
 
-	-- adapt sliders label and range
+	-- adapt sliders label and range (используем централизованный SLIDER_LIMITS)
 	if mode == "smooth" then
 		sliderSpeed.SetLabel("Orbit Speed")
 		sliderSpeed.SetRange(0.2, 6.0, ORBIT_SPEED)
 		sliderRadius.SetLabel("Orbit Radius")
 		sliderRadius.SetRange(0.5, 8.0, orbitRadius)
+		sliderForce.Container.Visible = false
 	elseif mode == "velocity" then
 		sliderSpeed.SetLabel("BV Power")
-		sliderSpeed.SetRange(50, 600, 200)
+		sliderSpeed.SetRange(SLIDER_LIMITS.BV_POWER_MIN, SLIDER_LIMITS.BV_POWER_MAX, SLIDER_LIMITS.BV_POWER_DEFAULT)
 		sliderRadius.SetLabel("Orbit Radius")
 		sliderRadius.SetRange(0.5, 8.0, orbitRadius)
-	else -- twisted
+		sliderForce.Container.Visible = false
+	elseif mode == "twisted" then
 		sliderSpeed.SetLabel("Twist Power")
-		sliderSpeed.SetRange(10, 400, 120)
+		sliderSpeed.SetRange(SLIDER_LIMITS.TWIST_MIN, SLIDER_LIMITS.TWIST_MAX, SLIDER_LIMITS.TWIST_DEFAULT)
 		sliderRadius.SetLabel("Orbit Radius")
 		sliderRadius.SetRange(0.5, 8.0, orbitRadius)
+		sliderForce.Container.Visible = false
+	elseif mode == "force" then
+		sliderSpeed.SetLabel("Force Speed")
+		sliderSpeed.SetRange(SLIDER_LIMITS.FORCE_SPEED_MIN, SLIDER_LIMITS.FORCE_SPEED_MAX, SLIDER_LIMITS.FORCE_SPEED_DEFAULT)
+		sliderRadius.SetLabel("Orbit Radius")
+		sliderRadius.SetRange(0.5, 8.0, orbitRadius)
+		sliderForce.Container.Visible = true
+		sliderForce.SetRange(SLIDER_LIMITS.FORCE_POWER_MIN, SLIDER_LIMITS.FORCE_POWER_MAX, SLIDER_LIMITS.FORCE_POWER_DEFAULT)
 	end
 end
 
@@ -543,7 +713,7 @@ btnSmooth.MouseButton1Click:Connect(function()
 			local myHRP = getHRP(LocalPlayer)
 			if myHRP then createSmoothObjectsFor(myHRP) end
 		end
-		applyModeUI()
+		applyModeUI(); saveState()
 	end
 end)
 btnVelocity.MouseButton1Click:Connect(function()
@@ -554,7 +724,7 @@ btnVelocity.MouseButton1Click:Connect(function()
 			local myHRP = getHRP(LocalPlayer)
 			if myHRP then createVelocityObjectsFor(myHRP) end
 		end
-		applyModeUI()
+		applyModeUI(); saveState()
 	end
 end)
 btnTwisted.MouseButton1Click:Connect(function()
@@ -565,11 +735,23 @@ btnTwisted.MouseButton1Click:Connect(function()
 			local myHRP = getHRP(LocalPlayer)
 			if myHRP then createLinearObjectsFor(myHRP) end
 		end
-		applyModeUI()
+		applyModeUI(); saveState()
+	end
+end)
+btnForce.MouseButton1Click:Connect(function()
+	if mode ~= "force" then
+		mode = "force"
+		if currentTarget then
+			destroyModeObjects()
+			local myHRP = getHRP(LocalPlayer)
+			if myHRP then createForceObjectsFor(myHRP) end
+		end
+		applyModeUI(); saveState()
 	end
 end)
 
 -- initial UI mode
+loadState()
 applyModeUI()
 
 -- ====== HOTKEY parsing and UX ======
@@ -615,9 +797,36 @@ hotkeyBox.FocusLost:Connect(function()
 		hotkeyStr = table.concat(parts, "+")
 		hotkeyBox.Text = "Hotkey: "..hotkeyStr
 		infoLabel.Text = "Hotkey set: "..hotkeyStr
+		saveState()
 	else
 		hotkeyBox.Text = "Hotkey: "..(hotkeyStr or "F")
 		infoLabel.Text = "Invalid hotkey."
+	end
+end)
+
+chargeHotkeyBox.FocusLost:Connect(function()
+	local txt = tostring(chargeHotkeyBox.Text or ""):gsub("^%s*(.-)%s*$","%1")
+	if #txt == 0 then chargeHotkeyBox.Text = "Charge: "..(chargeHotkeyStr or "G"); return end
+	-- strip "Charge:" or "Charge: "
+	local s = txt:gsub("^Charge:%s*","")
+	local primary, rCtrl, rShift, rAlt = parseHotkeyString(s)
+	if primary then
+		chargeKeyCode = primary
+		chargeRequireCtrl = rCtrl
+		chargeRequireShift = rShift
+		chargeRequireAlt = rAlt
+		local parts = {}
+		if chargeRequireCtrl then table.insert(parts, "Ctrl") end
+		if chargeRequireShift then table.insert(parts, "Shift") end
+		if chargeRequireAlt then table.insert(parts, "Alt") end
+		table.insert(parts, tostring(chargeKeyCode.Name))
+		chargeHotkeyStr = table.concat(parts, "+")
+		chargeHotkeyBox.Text = "Charge: "..chargeHotkeyStr
+		infoLabel.Text = "Charge hotkey set: "..chargeHotkeyStr
+		saveState()
+	else
+		chargeHotkeyBox.Text = "Charge: "..(chargeHotkeyStr or "G")
+		infoLabel.Text = "Invalid charge hotkey."
 	end
 end)
 
@@ -632,7 +841,7 @@ toggleBtn.MouseButton1Click:Connect(function()
 	updateToggleUI()
 	if not enabled then
 		-- disable everything and clear target and mode objects
-		setTarget(nil)
+		setTarget(nil, true)
 		destroyModeObjects()
 		infoLabel.Text = "Disabled"
 	else
@@ -643,15 +852,73 @@ toggleBtn.MouseButton1Click:Connect(function()
 			if myHRP then
 				if mode == "smooth" then createSmoothObjectsFor(myHRP)
 				elseif mode == "velocity" then createVelocityObjectsFor(myHRP)
-				elseif mode == "twisted" then createLinearObjectsFor(myHRP) end
+				elseif mode == "twisted" then createLinearObjectsFor(myHRP)
+				elseif mode == "force" then createForceObjectsFor(myHRP) end
 			end
 		end
 	end
+	saveState()
 end)
 
 changeTargetBtn.MouseButton1Click:Connect(cycleTarget)
 
--- ====== INPUT handling (hotkey + modifiers + steering) ======
+-- ====== ESP handling ======
+local function enableESPForPlayer(p)
+	if not p or p == LocalPlayer then return end
+	if playerHighlights[p] and playerHighlights[p].Parent then return end
+	local ch = p.Character
+	if not ch then return end
+	local hl = Instance.new("Highlight")
+	hl.Name = "StrafeESP_Highlight"
+	hl.Adornee = ch
+	hl.FillTransparency = 0.6
+	hl.OutlineTransparency = 0
+	hl.Parent = ch -- parent to character for cleanup
+	playerHighlights[p] = hl
+end
+
+local function disableESPForPlayer(p)
+	local hl = playerHighlights[p]
+	if hl then
+		safeDestroy(hl)
+		playerHighlights[p] = nil
+	end
+end
+
+local function updateESP(enabledFlag)
+	espEnabled = enabledFlag
+	if espEnabled then
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LocalPlayer then
+				enableESPForPlayer(p)
+			end
+		end
+		espBtn.Text = "PlayerESP: ON"
+		espBtn.BackgroundColor3 = Color3.fromRGB(120,220,120)
+	else
+		for p, _ in pairs(playerHighlights) do
+			disableESPForPlayer(p)
+		end
+		espBtn.Text = "PlayerESP: OFF"
+		espBtn.BackgroundColor3 = Color3.fromRGB(220,120,120)
+	end
+	saveState()
+end
+
+espBtn.MouseButton1Click:Connect(function() updateESP(not espEnabled) end)
+
+Players.PlayerAdded:Connect(function(p)
+	-- если ESP включен — добавляем подсветку новому игроку
+	p.CharacterAdded:Connect(function()
+		if espEnabled and p ~= LocalPlayer then enableESPForPlayer(p) end
+	end)
+end)
+Players.PlayerRemoving:Connect(function(p)
+	disableESPForPlayer(p)
+	if p == currentTarget then setTarget(nil, true) end
+end)
+
+-- ====== INPUT handling (hotkey + modifiers + steering + charge) ======
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
 	if input.UserInputType == Enum.UserInputType.Keyboard then
@@ -666,7 +933,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		elseif kc == Enum.KeyCode.X then orbitRadius = math.min(8, orbitRadius + 0.2); sliderRadius.SetValue(orbitRadius)
 		end
 
-		-- if hotkey primary pressed + modifiers match -> toggle ON/OFF
+		-- main hotkey (toggle)
 		if kc == hotkeyKeyCode then
 			local okCtrl = (not hotkeyRequireCtrl) or ctrlHeld
 			local okShift = (not hotkeyRequireShift) or shiftHeld
@@ -681,13 +948,30 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 						if myHRP then
 							if mode == "smooth" then createSmoothObjectsFor(myHRP)
 							elseif mode == "velocity" then createVelocityObjectsFor(myHRP)
-							elseif mode == "twisted" then createLinearObjectsFor(myHRP) end
+							elseif mode == "twisted" then createLinearObjectsFor(myHRP)
+							elseif mode == "force" then createForceObjectsFor(myHRP) end
 						end
 					end
 				else
-					setTarget(nil)
+					setTarget(nil, true)
 					destroyModeObjects()
 					infoLabel.Text = "Disabled"
+				end
+				saveState()
+			end
+		end
+
+		-- charge hotkey
+		if kc == chargeKeyCode then
+			local okCtrl = (not chargeRequireCtrl) or ctrlHeld
+			local okShift = (not chargeRequireShift) or shiftHeld
+			local okAlt = (not chargeRequireAlt) or altHeld
+			if okCtrl and okShift and okAlt then
+				-- if have target, start charge
+				if currentTarget then
+					chargeTimer = CHARGE_DURATION
+					-- visual/feedback
+					infoLabel.Text = ("Charging %s..."):format(tostring(currentTarget.Name))
 				end
 			end
 		end
@@ -709,12 +993,21 @@ LocalPlayer.CharacterAdded:Connect(function(char)
 	local hrp = char:WaitForChild("HumanoidRootPart", 5)
 	if hrp then
 		charHumanoid = char:FindFirstChildOfClass("Humanoid")
-		-- if we have a current target and enabled, create mode objects for this new HRP
+		-- если включено и есть таргет — создаём объекты на новом HRP
 		if enabled and currentTarget then
 			destroyModeObjects()
 			if mode == "smooth" then createSmoothObjectsFor(hrp)
 			elseif mode == "velocity" then createVelocityObjectsFor(hrp)
-			elseif mode == "twisted" then createLinearObjectsFor(hrp) end
+			elseif mode == "twisted" then createLinearObjectsFor(hrp)
+			elseif mode == "force" then createForceObjectsFor(hrp) end
+		end
+		-- restore ESP highlight for others when respawning
+		if espEnabled then
+			for _, p in ipairs(Players:GetPlayers()) do
+				if p ~= LocalPlayer then
+					enableESPForPlayer(p)
+				end
+			end
 		end
 	end
 end)
@@ -722,9 +1015,8 @@ LocalPlayer.CharacterRemoving:Connect(function()
 	charHumanoid = nil
 	destroyModeObjects()
 	clearRing()
-	currentTarget = nil
+	-- не очищаем currentTarget полностью — пользователь может восстановить
 end)
-Players.PlayerRemoving:Connect(function(p) if p == currentTarget then setTarget(nil) end end)
 
 -- ====== MAIN LOOP ======
 local startTick = tick()
@@ -738,14 +1030,29 @@ RunService.RenderStepped:Connect(function(dt)
 	local rVal = tonumber(sliderRadius.GetValue() or orbitRadius) or orbitRadius
 	-- map sliders to semantics per mode
 	if mode == "smooth" then ORBIT_SPEED = sVal; orbitRadius = rVal
-	elseif mode == "velocity" then -- sliderSpeed = BV power
-		orbitRadius = rVal
-	elseif mode == "twisted" then orbitRadius = rVal end
+	elseif mode == "velocity" then orbitRadius = rVal
+	elseif mode == "twisted" then orbitRadius = rVal
+	elseif mode == "force" then orbitRadius = rVal end
+
+	-- update search radius from slider
+	local newSearch = tonumber(sliderSearch.GetValue() or SEARCH_RADIUS) or SEARCH_RADIUS
+	SEARCH_RADIUS = newSearch
+
+	-- Force slider value
+	local forcePower = tonumber(sliderForce.GetValue() or SLIDER_LIMITS.FORCE_POWER_DEFAULT) or SLIDER_LIMITS.FORCE_POWER_DEFAULT
+
+	-- charge timer tick
+	if chargeTimer > 0 then
+		chargeTimer = math.max(0, chargeTimer - dt)
+		if chargeTimer == 0 then
+			-- charge ended
+		end
+	end
 
 	if not enabled then return end
 
 	local myHRP = getHRP(LocalPlayer)
-	if not myHRP then setTarget(nil); return end
+	if not myHRP then setTarget(nil, true); return end
 
 	-- auto-find target when none
 	if not currentTarget then
@@ -767,7 +1074,7 @@ RunService.RenderStepped:Connect(function(dt)
 	local targetHRP = getHRP(currentTarget)
 	if not targetHRP then
 		-- if no target, ensure mode objects removed so player free to move
-		if attach0 or alignObj or bvObj or bgObj or lvObj then
+		if attach0 or alignObj or bvObj or bgObj or lvObj or vfObj or vfAttach or fallbackForceBV then
 			destroyModeObjects()
 		end
 		infoLabel.Text = "Nearest: — | Dist: — | Dir: " .. (orbitDirection==1 and "CW" or "CCW") .. " | R: " .. string.format("%.2f", orbitRadius)
@@ -776,7 +1083,7 @@ RunService.RenderStepped:Connect(function(dt)
 	else
 		local distToMe = (targetHRP.Position - myHRP.Position).Magnitude
 		if distToMe > SEARCH_RADIUS then
-			setTarget(nil)
+			setTarget(nil, true)
 			return
 		else
 			infoLabel.Text = ("Nearest: %s | Dist: %.1f | Dir: %s | R: %.2f"):format(tostring(currentTarget.Name), distToMe, (orbitDirection==1 and "CW" or "CCW"), orbitRadius)
@@ -786,7 +1093,7 @@ RunService.RenderStepped:Connect(function(dt)
 	-- draw ring (visual)
 	if currentTarget and #ringParts == 0 then createRingSegments(SEGMENTS) end
 	if currentTarget and targetHRP and #ringParts > 0 then
-		local levOffset = math.sin(t * LEVITATE_FREQ) * LEVITATE_AMPLITUDE + (math.noise(t * 0.7, PlayerId * 0.01) - 0.5) * 0.06
+		local levOffset = math.sin(t * 1.0) * 0.22 + (math.noise(t * 0.7, PlayerId * 0.01) - 0.5) * 0.06
 		local basePos = targetHRP.Position + Vector3.new(0, RING_HEIGHT_BASE + levOffset, 0)
 		local angleStep = (2 * math.pi) / #ringParts
 		for i, part in ipairs(ringParts) do
@@ -795,9 +1102,9 @@ RunService.RenderStepped:Connect(function(dt)
 			local radialPulse = math.sin(t * 1.35 + angle * 1.1) * 0.05
 			local r = RING_RADIUS + radialPulse + (math.noise(i * 0.03, t * 0.6) - 0.5) * 0.03
 			local bob =
-				math.sin(t * BOB_SPEED1 + angle * 0.8) * BOB_AMPLITUDE +
-				math.sin(t * BOB_SPEED2 + angle * 0.45) * (BOB_AMPLITUDE * 0.25) +
-				math.cos(t * BOB_NOISE_FREQ + angle * 0.3) * (BOB_AMPLITUDE * 0.08)
+				math.sin(t * 2.0 + angle * 0.8) * 0.28 +
+				math.sin(t * 0.6 + angle * 0.45) * (0.28 * 0.25) +
+				math.cos(t * 0.9 + angle * 0.3) * (0.28 * 0.08)
 			local x = math.cos(angle) * r
 			local z = math.sin(angle) * r
 			local pos = basePos + Vector3.new(x, bob, z)
@@ -814,7 +1121,7 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 	end
 
-	-- orbit math
+	-- orbit math (unchanged logic)
 	if burstTimer > 0 then
 		burstTimer = math.max(0, burstTimer - dt)
 		if burstTimer == 0 then burstStrength = 0 end
@@ -839,8 +1146,14 @@ RunService.RenderStepped:Connect(function(dt)
 	end
 	local speedBias = clamp(radialError * 0.45, -2.2, 2.2)
 
+	-- if charging, amplify orbit speed/burst
+	local chargeEffect = 0
+	if chargeTimer > 0 then
+		chargeEffect = CHARGE_STRENGTH
+	end
 	local burstEffect = burstStrength * (burstTimer > 0 and 1 or 0)
-	orbitAngle = orbitAngle + (orbitDirection * (effectiveBaseSpeed + speedBias + burstEffect) + steeringInput * 1.8) * dt
+
+	orbitAngle = orbitAngle + (orbitDirection * (effectiveBaseSpeed * (1 + chargeEffect*0.05) + speedBias + burstEffect) + steeringInput * 1.8) * dt
 
 	local desiredRadius = orbitRadius + drift * 0.6
 	if myDist and myDist < desiredRadius - 0.6 then desiredRadius = desiredRadius + (desiredRadius - myDist) * 0.35 end
@@ -849,21 +1162,54 @@ RunService.RenderStepped:Connect(function(dt)
 	local oz = math.sin(orbitAngle) * desiredRadius
 	local targetPos = targetHRP.Position + Vector3.new(ox, 1.2, oz)
 
-	-- MODE application: only if currentTarget exists and respective objects present
+	-- MODE application
 	if mode == "smooth" then
 		-- ensure objects exist
-		if not (alignObj and helperPart and attach0) then
-			createSmoothObjectsFor(myHRP)
-		end
+		if not (alignObj and helperPart and attach0) then createSmoothObjectsFor(myHRP) end
 		if alignObj and helperPart then
 			local curPos = helperPart.Position
 			local toTarget = (targetPos - curPos)
+
+			-- spring accel
 			local accel = toTarget * HELPER_SPRING - helperVel * HELPER_DAMP
-			helperVel = helperVel + accel * dt
-			if helperVel.Magnitude > HELPER_MAX_SPEED then helperVel = helperVel.Unit * HELPER_MAX_SPEED end
+
+			-- limit accel magnitude to avoid instant huge jumps
+			local aMag = accel.Magnitude
+			if aMag > HELPER_MAX_ACCEL then
+				accel = accel.Unit * HELPER_MAX_ACCEL
+			end
+
+			-- integrate velocity with smoothing interp to reduce snappiness
+			local candidateVel = helperVel + accel * dt
+			if candidateVel.Magnitude > HELPER_MAX_SPEED then candidateVel = candidateVel.Unit * HELPER_MAX_SPEED end
+			local interp = clamp(HELPER_SMOOTH_INTERP * dt, 0, 1)
+			helperVel = Vector3.new(
+				lerp(helperVel.X, candidateVel.X, interp),
+				lerp(helperVel.Y, candidateVel.Y, interp),
+				lerp(helperVel.Z, candidateVel.Z, interp)
+			)
+
 			local newPos = curPos + helperVel * dt
+
+			-- prevent big teleport per-frame (maxStep)
+			local maxStep = math.max(3, HELPER_MAX_SPEED * 0.2) * dt
+			local toNew = newPos - curPos
+			if toNew.Magnitude > maxStep then
+				newPos = curPos + toNew.Unit * maxStep
+			end
+
+			-- if charging — nudge helper faster toward target
+			if chargeTimer > 0 then
+				local chargeDir = (targetPos - curPos)
+				if chargeDir.Magnitude > 0.01 then
+					local n = chargeDir.Unit * (math.max(10, HELPER_MAX_SPEED) * 0.7) * (chargeTimer/CHARGE_DURATION)
+					newPos = newPos + n * dt
+				end
+			end
+
 			helperPart.CFrame = CFrame.new(newPos)
 
+			-- adjust AlignPosition.MaxForce according to distance
 			local playerMoving = false
 			if charHumanoid then
 				local mv = charHumanoid.MoveDirection
@@ -881,18 +1227,16 @@ RunService.RenderStepped:Connect(function(dt)
 	elseif mode == "velocity" then
 		if not (bvObj and bgObj) then createVelocityObjectsFor(myHRP) end
 		if bvObj and bgObj then
-			-- BV power slider
-			local power = tonumber(sliderSpeed.GetValue() or 200) or 200
+			local power = tonumber(sliderSpeed.GetValue() or SLIDER_LIMITS.BV_POWER_DEFAULT) or SLIDER_LIMITS.BV_POWER_DEFAULT
 			local dir = (targetPos - myHRP.Position)
 			dir = Vector3.new(dir.X, dir.Y * 0.6, dir.Z)
 			local dist = dir.Magnitude
-			local speedTarget = ORBIT_SPEED * (power/200) * 4
+			local speedTarget = ORBIT_SPEED * (power/SLIDER_LIMITS.BV_POWER_DEFAULT) * 4 * (chargeTimer>0 and (1+CHARGE_STRENGTH*0.15) or 1)
 			local velTarget = Vector3.new(0,0,0)
 			if dist > 0.01 then velTarget = dir.Unit * speedTarget end
 			if dist < 1.0 then velTarget = velTarget * dist end
 			bvObj.Velocity = velTarget
 			bvObj.MaxForce = Vector3.new(clamp(power*200, 1000, ALIGN_MAX_FORCE), clamp(power*200, 1000, ALIGN_MAX_FORCE), clamp(power*200, 1000, ALIGN_MAX_FORCE))
-			-- orient yaw toward motion
 			local flat = Vector3.new(velTarget.X, 0, velTarget.Z)
 			if flat.Magnitude > 0.01 then
 				local desiredYaw = CFrame.new(myHRP.Position, myHRP.Position + flat)
@@ -903,16 +1247,38 @@ RunService.RenderStepped:Connect(function(dt)
 	elseif mode == "twisted" then
 		if not lvObj then createLinearObjectsFor(myHRP) end
 		if lvObj then
-			local power = tonumber(sliderSpeed.GetValue() or 120) or 120
+			local power = tonumber(sliderSpeed.GetValue() or SLIDER_LIMITS.TWIST_DEFAULT) or SLIDER_LIMITS.TWIST_DEFAULT
 			local dir = (targetPos - myHRP.Position)
 			dir = Vector3.new(dir.X, dir.Y * 0.6, dir.Z)
 			local dist = dir.Magnitude
-			local base = (power / 120) * (ORBIT_SPEED * 3.5)
+			local base = (power / SLIDER_LIMITS.TWIST_DEFAULT) * (ORBIT_SPEED * 3.5) * (chargeTimer>0 and (1+CHARGE_STRENGTH*0.12) or 1)
 			local vel = Vector3.new(0,0,0)
 			if dist > 0.01 then vel = dir.Unit * base end
 			if dist < 1.0 then vel = vel * dist end
 			lvObj.VectorVelocity = vel
 			lvObj.MaxForce = math.max(1e3, math.abs(power) * 500)
+		end
+
+	elseif mode == "force" then
+		if not (vfObj or fallbackForceBV) then createForceObjectsFor(myHRP) end
+		local dir = (targetPos - myHRP.Position)
+		local desired = Vector3.new(dir.X, dir.Y * 0.6, dir.Z)
+		local dist = desired.Magnitude
+		local unit = Vector3.new(0,0,0)
+		if dist > 0.01 then unit = desired.Unit end
+		local appliedPower = forcePower * (chargeTimer>0 and (1 + CHARGE_STRENGTH*0.4) or 1)
+		local forceVec = unit * appliedPower
+		if vfObj then
+			pcall(function() vfObj.Force = forceVec end)
+		elseif fallbackForceBV then
+			local speedTarget = clamp(ORBIT_SPEED * (appliedPower/SLIDER_LIMITS.FORCE_POWER_DEFAULT) * 6, 0, 120)
+			local velTarget = unit * speedTarget
+			if dist < 1 then velTarget = velTarget * dist end
+			pcall(function()
+				fallbackForceBV.Velocity = velTarget
+				local mf = clamp(appliedPower * 50, 1000, ALIGN_MAX_FORCE)
+				fallbackForceBV.MaxForce = Vector3.new(mf,mf,mf)
+			end)
 		end
 	end
 end)
@@ -925,7 +1291,13 @@ screenGui.AncestryChanged:Connect(function(_, parent)
 	end
 end)
 
--- initial text
+-- initial text + restore hotkeys
 hotkeyBox.Text = "Hotkey: "..hotkeyStr
+chargeHotkeyBox.Text = "Charge: "..chargeHotkeyStr
 updateToggleUI()
 applyModeUI()
+loadState()
+-- apply ESP after load
+updateESP(espEnabled)
+saveState()
+
