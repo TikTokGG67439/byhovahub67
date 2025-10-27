@@ -340,8 +340,6 @@ local function setFrameDraggableState(allowed)
 	pcall(function() if aimViewPicker then aimViewPicker.Draggable = allowed end end)
 end
 
-end
-
 local function createSlider(parent, yOffset, labelText, minVal, maxVal, initialVal, formatFn)
 	local container = Instance.new("Frame", parent)
 	container.Size = UDim2.new(1, -12, 0, 36)
@@ -497,8 +495,8 @@ local sliderSearch = createSlider(frame, 380, "Search Radius", 5, 150, SEARCH_RA
 
 -- RUNTIME STATE
 local enabled = false
-	currentTargetCharConn = nil
-	currentTargetRemovingConn = nil
+currentTargetCharConn = nil
+currentTargetRemovingConn = nil
 local currentTarget = nil
 local ringParts = {}
 local folder = nil
